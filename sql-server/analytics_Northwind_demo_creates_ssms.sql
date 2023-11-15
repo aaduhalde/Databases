@@ -126,7 +126,7 @@ INNER JOIN [Order Details] od ON o.OrderID = od.OrderID
 WHERE YEAR(o.OrderDate) = '2018'
 GROUP BY c.CompanyName, c.Country, c.City
 ORDER BY [Total Sale] DESC
-z
+
 
 
 --los productos de venta mayor igual a 30 mil y las unidades que se vendieron
