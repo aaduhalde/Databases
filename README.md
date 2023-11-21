@@ -9,3 +9,11 @@
   >datawarehouses
   >datamarts 
   
+  
+  TEST
+  #Unit 
+  #integration 
+  #a/b
+  
+  Manipulación, integración de datos y automatización.  
+  Machine learning. REST API e interfaces de usuario. CI/CD Pipelines. 
