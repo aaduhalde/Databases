@@ -1,0 +1,69 @@
+diaria/momo_wallet_3102_05a.sql PYG3102P0SP0
+diaria/momo_wallet_3102_01a.sql PYG3102P0SP1
+diaria/momo_wallet_3102_01b.sql PYG3102P0SP2
+diaria/momo_wallet_3102_01c.sql PYG3102P0SP3
+diaria/momo_wallet_3102_01d.sql PYG3102P0SP4
+diaria/momo_wallet_3102_01e.sql PYG3102P0SP5
+diaria/momo_wallet_3102_01f.sql PYG3102P0SP6
+diaria/momo_wallet_3102_01g.sql PYG3102P0SP7
+
+
+
+
+
+
+
+
+
+
+
+
+diaria/momo_wallet_3102_05a.sql PYG3102P0SP0
+.sql, 
+dba_tables
+
+
+
+diaria/momo_wallet_3102_01a.sql PYG3102P0SP1 AUX, origen DAT
+diaria/momo_wallet_3102_01b.sql PYG3102P0SP2
+
+
+diaria/momo_wallet_3102_01c.sql PYG3102P0SP3
+diaria/momo_wallet_3102_01d.sql PYG3102P0SP4
+diaria/momo_wallet_3102_01e.sql PYG3102P0SP5
+diaria/momo_wallet_3102_01f.sql PYG3102P0SP6  DROPEA
+
+diaria/momo_wallet_3102_01g.sql PYG3102P0SP7
+
+
+
+diaria/momo_wallet_3102_05a.sql PYG3102P0SP0
+DROPEA
+
+
+
+(esto es un correctivo,)
+ origen de los datos CSV, Unnaki, POSTGRESQL, /PARAGUAY.
+ OBJETO DIRECTORY _ FILESYSTEM, desde DRANCING,
+
+
+ /////////////////////////////
+
+Arquitectura-DW <Arquitectura-DW@claro.com.ar>
+
+/////////////////////////////
+/////////////////////////////
+
+SYS.email_handler.send_email (
+            'Proceso A0145 carga REPORTE_CATER_A0145 Sin registros a replicar',
+            'agustin.yaskuloski@claro.com.ar',
+               'La fuente de mongo para el reporte de cambio Terminal dia: '
+            || v_fecha_desde
+            || ' no contiene informacion',
+            'Desarrollo Datawarehouse',
+            NULL,
+            NULL);
+
+
+
+

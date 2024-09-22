@@ -1,0 +1,4 @@
+chmod 777 /home/exc44585/8_G4713/*.*
+
+sh /home/exc44585/8_G4713/pre_corro_8_G4713.sh > /home/exc44585/8_G4713/nohup_ar_8_G4713.out
+cat /home/exc44585/8_G4713/nohup_ar_8_G4713.out

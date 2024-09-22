@@ -1,0 +1,3602 @@
+CREATE OR REPLACE PACKAGE BODY PA_WS_REPORT IS
+  -- Author  : Braian Sanchez
+  -- Created : 20/09/2017
+  -- Purpose : Generacion y envio de reportes
+  -- Version : 1.20
+  -- Updates :
+  /*DATE                  USR              JIRA
+    30/11/17              Boissonnet       ECOM-639  - Se agrega compresion del archivo generado.
+                                                       Se agrega generacion reporte del dia actual.
+    26/03/18              Ignacio Arillo   ECOM-1735 - Se agrega parametro para indicar si comprime o no
+                                                     - Cambiamos product_sale_channel por vista s_ecom_catalogo
+    23/04/18              Braian Sanchez   ECOM-1163 - Se agregan datos de PICKUP
+    25/09/18              Boissonnet       ECOM-3393 - Se corrige conversiones en fechas de PICKUP
+    04/10/18              Cortez           ECOM-1188 - Se hace una reingenieria del paquete con mejoras varias
+    07/11/18              Cortez           ECOM-2281 - Se agrega informacion de Puntos Claro Club en p_pedidos_cater
+    28/12/18              Bulgheroni       ECOM-4579 - Se modifica 'p_obtiene_traduccion_estado'(La traduccion se realiza
+                                                       utilizando parametros creados en tabla MAVERIC_PARAMETERS)
+    19/03/19              Bulgheroni       ECOM-5307 - Se modifican p_pedidos_cater y p_pedidos_activaciones para obtener
+                                                       los montos del pedido de la tabla WS_ORDER_ECOM_AMOUNTS
+    26/06/19              Bulgheroni       ECOM-6505 - Se modifica p_pedidos_cater para que no se consideren los pedidos
+                                                       en estado 178 que no tengan asignado Numero de Remito
+    30/08/19              Bulgheroni       ECOM-7996 - Se modifica condicion de filtro de pedidos de Cater en p_pedidos_cater
+    02/09/19              Bulgheroni       ECOM-8020 - Se modifica p_obtiene_precios_activacion
+    09/10/19              Bulgheroni       ECOM-1190 - En p_pedidos_cater se modifica la obtencion del domicilio de entrega del 
+                                                       producto para considerar Domicilio Alternativo
+	24/06/20              Bulgheroni       ECOM-9853 - Se modifican f_genera_csv_ecommerce y p_pedidos_cater para 
+                                                       diferenciar Accesorios de Terminales		
+    05/11/20              Bulgheroni       PDEC-719  - Se modifican f_genera_csv_ecommerce y p_pedidos_cater para
+                                                       para gestionar Pedidos Multiples  
+    27/05/2021            Bulgheroni       PDEC-2359 - Se modifica p_pedidos_cater por cambio en la obtencion del tipo de accesorio													   
+    25/06/2021            Bulgheroni       PDEC-2887 - Se modifica p_pedidos_cater para gestionar premios Claro Club en pedidos simples 
+                                                       y combinados
+	09/09/2021   	      Bulgheroni       PDEC-4579
+                                           PDEC-4581
+                                           PDEC-4738 - Se corrige p_pedidos_cater para pedidos no registrados en tabla WS_ECOM_ORDER_AWARD
+	07/03/2022            Bulgheroni       PDEC-7709 - Se agrega columna que indica version de Tienda Origen del pedido
+    08/04/2022            Bulgheroni       PDEC-8169 - Se agrega columna de Receptor Alternativo
+    14/06/2022            Bulgheroni                 - Se agregan columnas de Puntos de Scoring y Rango de Scoring
+	09/08/2022            Bulgheroni       PDEC-10182- En p_pedidos_cater se cambia la forma en la que se buscan datos del titular de la linea,
+                                                       en lugar de sacarlos de la tabla tele_order_heders, se sacan de la tabla clients 
+	13/09/2022            Bulgheroni       PDEC-10533  Se mejora los cursores en la obtencion de datos del cliente en p_pedidos_cater												   
+    */
+-------------------------------------------------------------------------
+  --La funcion recibe en P_ID_CURSOR un 1 por defecto
+  --y en P_SLC_REPORTE: 1 para crear reporte del mes actual
+  --                    2 para un reporte del mes anterior.
+  --                    3 para un reporte del dia actual.
+
+ FUNCTION f_genera_csv_ecommerce(p_id_cursor   IN NUMBER,
+                                 p_slc_reporte IN NUMBER,
+                                 p_error_text  OUT VARCHAR2)
+   --P_ID_CURSOR es el valor analizado para determinar que reporte debe armar
+   RETURN NUMBER IS
+    v_destinatarios  VARCHAR2(500);
+    v_from           VARCHAR2(100);
+    v_text           VARCHAR2(2000);
+    v_dir            VARCHAR2(100);
+    v_dir_path       VARCHAR2(100);
+    v_nom_cur        VARCHAR2(1000);
+    v_subject        VARCHAR2(100);
+    v_result         NUMBER;
+    v_datos          VARCHAR2(10) := 'S'; -- ESTA VARIABLE ES PARA DETERMINAR SI HAY DATOS
+    OUT_FILE         UTL_FILE.FILE_TYPE;
+    file_name        VARCHAR2(70);
+    e_error          EXCEPTION;
+    v_sentencia      VARCHAR2(100) := '';
+    v_error          VARCHAR2(100) := NULL;
+    v_header         VARCHAR2(5000) := NULL;
+
+    v_fecha_desde DATE;
+    v_fecha_hasta DATE;
+    --ECOM-1188
+    --parametros nuevos
+    v_estados_cater Maveric_parameters.Mpr_Value%type:=null;
+    v_estados_acti  Maveric_parameters.Mpr_Value%type:=null;
+    v_oso_id_cater  Maveric_parameters.Mpr_Value%type:=null;
+    v_razon_cater   Maveric_parameters.Mpr_Value%type:=null;
+    v_oso_id_acti   Maveric_parameters.Mpr_Value%type:=null;
+    v_dealer_acti   Maveric_parameters.Mpr_Value%type:=null;
+    v_version       number(1):=1;
+    v_fecha_comparacion_pp DATE;
+    --ECOM-1188
+  BEGIN
+    v_datos := 'N';
+
+    CASE P_ID_CURSOR
+      WHEN 1 THEN
+
+        BEGIN
+          v_sentencia := 'Buscando WS_MAIL_TO...';
+          SELECT MPR_VALUE
+            INTO v_destinatarios
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_MAIL_TO';
+
+          v_sentencia := 'Buscando WS_DIR_REPORTE...';
+          SELECT MPR_VALUE
+            INTO v_dir
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_DIR_REPORTE';
+
+          v_sentencia := 'Buscando WS_MAIL_FROM...';
+          SELECT MPR_VALUE
+            INTO v_from
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_MAIL_FROM';
+           ----
+          v_sentencia := 'Obteniendo path real para WS_DIR_REPORTE';
+          SELECT directory_path
+            INTO v_dir_path
+            FROM dba_directories
+           WHERE upper(directory_name) =
+                 (SELECT mpr_value
+                    FROM maveric_parameters
+                   WHERE mpr_id = 'WS_DIR_REPORTE');
+
+          --ECOM-1188 Obtengo los parametros NUEVOS
+          v_sentencia := 'Buscando PP WS_CHANGE_PP';
+
+          BEGIN
+          SELECT trunc(sysdate) - mpr_value
+            INTO v_fecha_comparacion_pp
+            FROM MAVERIC_PARAMETERS
+           WHERE mpr_id = 'WS_CHANGE_PP';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_fecha_comparacion_pp:=trunc(sysdate) - 180;
+          END;
+
+          v_sentencia := 'Buscando WS_STATUS_CATER';
+          BEGIN
+          select mpr_value
+            into v_estados_cater
+            from maveric_parameters
+           where mpr_id = 'WS_STATUS_CATER';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_estados_cater:='#177#519#';
+          END;
+
+          v_sentencia := 'Buscando WS_STATUS_ACTI';
+          BEGIN
+          select mpr_value
+            into v_estados_acti
+            from maveric_parameters
+           where mpr_id = 'WS_STATUS_ACTI';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_estados_acti:='#177#';
+          END;
+
+          v_sentencia := 'Buscando WS_OSO_ID_CATER';
+          BEGIN
+          select mpr_value
+            into v_oso_id_cater
+            from maveric_parameters
+           where mpr_id = 'WS_OSO_ID_CATER';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_oso_id_cater:='E1';
+          END;
+
+          v_sentencia := 'Buscando WS_RSN_PRODUCT';     --- ECOM-9853
+          BEGIN
+          select mpr_value
+            into v_razon_cater
+            from maveric_parameters
+           where mpr_id = 'WS_RSN_PRODUCT';  --'WS_RAZON_EQUIPO'; --- ECOM-9853
+          EXCEPTION
+             WHEN NO_DATA_FOUND THEN
+                 v_razon_cater:='$VENTER$VTACCE$';    ---ECOM-9853
+          END;
+
+          v_sentencia := 'Buscando WS_OSO_ID_ACTI';
+
+          BEGIN
+          select mpr_value
+            into v_oso_id_acti
+            from maveric_parameters
+           where mpr_id = 'WS_OSO_ID_ACTI';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_oso_id_acti:='VT';
+          END;
+
+          v_sentencia := 'Buscando WS_DEALER_ACTI ';
+
+          BEGIN
+          select mpr_value
+            into v_dealer_acti
+            from maveric_parameters
+           where mpr_id = 'WS_DEALER_ACTI';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_dealer_acti:='E-COM00000';
+          END;
+          v_sentencia := 'Buscando WS_VERSION_REP';
+
+          BEGIN
+          select mpr_value
+            into v_version
+            from maveric_parameters
+           where mpr_id = 'WS_VERSION_REP';
+          EXCEPTION
+            WHEN NO_DATA_FOUND THEN
+              v_version:=2;
+          END;
+
+          --Se selecciona el periodo en el que se toman los datos
+          IF P_SLC_REPORTE = 1 THEN
+            SELECT last_day(add_months(trunc(sysdate), -1)) + 1,
+                   last_day(trunc(sysdate)) + 1
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT1...';
+            SELECT MPR_VALUE
+              INTO v_text
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_TEXT1';
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ1...';
+            SELECT MPR_VALUE
+              INTO v_nom_cur
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_SUBJ1';
+
+            v_subject := v_nom_cur;
+          END IF;
+
+          IF P_SLC_REPORTE = 2 THEN
+            SELECT last_day(add_months(trunc(sysdate), -2)) + 1,
+                   last_day(add_months(trunc(sysdate), -1)) + 1
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT2...';
+            SELECT MPR_VALUE
+              INTO v_text
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_TEXT2';
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ2...';
+            SELECT MPR_VALUE
+              INTO v_nom_cur
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_SUBJ2';
+
+            v_subject := v_nom_cur;
+          END IF;
+
+          IF P_SLC_REPORTE = 3 THEN
+            SELECT TRUNC(SYSDATE),
+                   trunc(sysdate+1)
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT3...';
+            SELECT 'Reporte del dia'
+              INTO v_text
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ3...';
+            SELECT 'Reporte_dia_actual'
+              INTO v_nom_cur
+              FROM dual;
+
+            v_subject := v_nom_cur;
+          END IF;
+
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            p_error_text := 'No se encontro el parametro, ' || v_sentencia;
+            RETURN 1;
+          WHEN OTHERS THEN
+            p_error_text := 'Error ' || SQLCODE || ' ' || SQLERRM;
+            RETURN 1;
+        END;
+
+        v_sentencia := 'CREANDO ARCHIVO ' || v_nom_cur || '...';
+        file_name   := v_nom_cur || to_char(SYSDATE,'yyyymmddhhmiss') || '.csv';
+        OUT_FILE    := UTL_FILE.FOPEN(v_dir, file_name, 'W',32767);   --- ECOM-9853
+        ----------------------------
+
+        --dbms_session.set_nls('nls_date_format', '''yyyy-mm-dd''');
+        v_header := '"ORDEN";"OPERACION";"TIPO DE PEDIDO";"PRODUCTO";"SERIADO";"TRAFICA";"CUENTA";"LINEA";"NOMBRE Y APELLIDO";"TIPO DOCUMENTO";"DOCUMENTO";"SEXO";"EDAD";"FECHA DE NACIMIENTO";"REGION";"NEGOCIO";"ID PEDIDO STL";"REMITO SAP";"ID TRACKING";"FECHA CREACION";"FECHA DE ACTIVACION";"ESTADO";"N° TICKLER PEDECO";"SKU";" DESCRIPCION SKU";"MARCA";"NIVEL PRECIO PEDIDO";"NIVEL PRECIO REAL";"VALIDACION NIVEL PRECIO";"PRECIO LISTA SIN IMP";" PRECIO LISTA CON IMP";"SUBS3";"SUBS10";"SUBS1";"PRECIO FINAL";"TOTAL FINANCIADO";" DIF PL-PO";" FORMA DE PAGO";"CANTIDAD DE CUOTAS";"CANTIDAD DE CUOTAS REAL";"TARJETA";"BANCO";"CODIGO APROBACION";"FLAG CAMBIO DE PLAN ";"CODIGO DE PLAN ORIGEN ";"MONTO PLAN ORIGEN";"CODIGO DE PLAN DESTINO";"MONTO PLAN DESTINO";"CAMBIO DE TIPO DE NEGOCIO DESDE PP";"FECHA DE CAMBIO DE TIPO DE NEGOCIO";"RIESGO";"FECHA CREACION";"FECHA ACTIVACION";"TRACK ID";"FECHA ENTREGA";"HORA ENTREGA";"NOMBRE SUCURSAL";"TIPO VENTA";"CATEGORIA CLARO CLUB";"ID PREMIO";"DESCRIP PREMIO";"PUNTOS PREMIO";"COSTO PREMIO";"PREMIO PENDIENTE";"PUNTOS DISPONIBLES";"RECEPTOR ALTERNATIVO";"ORIGEN";"RANGO SCORE";"PUNTOS SCORE"';   --- PDEC-8169
+        v_sentencia:= 'Obtengo la informacion de los pedidos de CATER';
+        
+        p_pedidos_cater    (P_VERSION       => v_version,
+                            P_HEADER        => v_header,
+                            P_DATA          => v_datos,
+                            p_name_cursor   => v_nom_cur,
+                            P_OUT_FILE      => OUT_FILE,
+                            P_DATE_FROM     => v_fecha_desde,
+                            P_DATE_UNTIL    => v_fecha_hasta,
+                            P_STATUS        => v_estados_cater,
+                            P_TYPE_ORDER    => v_oso_id_cater,
+                            P_REASON        => v_razon_cater,
+                            P_DATE_COMP_PP  => v_fecha_comparacion_pp,
+                            P_SENTENCIA     => v_sentencia,
+                            P_ERROR         => v_error);
+
+        IF v_error is not null THEN
+           RAISE e_error;
+        END IF;
+        v_sentencia:= 'Obtengo la informacion de los pedidos de ACTIVACIONES';
+
+        p_pedidos_activaciones( P_VERSION       => v_version,
+                                P_HEADER        => v_header,
+                                P_DATA          => v_datos,
+                                p_name_cursor   => v_nom_cur,
+                                P_OUT_FILE      => OUT_FILE,
+                                P_DATE_FROM     => v_fecha_desde,
+                                P_DATE_UNTIL    => v_fecha_hasta,
+                                P_STATUS        => v_estados_acti,
+                                P_TYPE_ORDER    => v_oso_id_acti,
+                                P_DEALER        => v_dealer_acti,
+                                P_SENTENCIA     => v_sentencia,
+                                P_ERROR         => v_error);
+
+        IF v_error is not null THEN
+           RAISE e_error;
+        END IF;
+
+    END CASE;
+    --SI NO HAY DATOS DENTRO DEL CURSOR SE DEBE INFORMAR QUE POSIBLEMENTE EL SCHEDULERS ES VIEJO
+    IF v_datos <> 'S' THEN
+      UTL_FILE.PUT_LINE(OUT_FILE, 'NO HAY DATOS PARA ' || v_nom_cur, TRUE);
+    END IF;
+    UTL_FILE.FCLOSE(OUT_FILE);
+
+    v_sentencia:='Envio de mail.';
+
+    v_result := f_create_mail(p_eFrom      => v_from,
+                              p_eTo        => v_destinatarios,
+                              p_eCC        => null,
+                              p_eSubject   => v_subject,
+                              p_pText      => v_subject,
+                              p_dir        => v_dir_path,
+                              p_file       => file_name,
+                              p_error_text => v_error);
+
+    IF v_result <> 0 THEN
+       RAISE e_error;
+    END IF;
+
+    COMMIT;
+    RETURN 0;
+  EXCEPTION
+    WHEN e_error THEN
+      p_error_text := v_sentencia||' - '||v_error ;
+      RETURN 1;
+    WHEN OTHERS THEN
+      p_error_text := 'Error '|| v_sentencia||' - SQLCODE: '||SQLCODE  || ',SQLERRM: ' || SQLERRM ;
+      RETURN 1;
+  END f_genera_csv_ecommerce;
+  -------------------------------------------------------------------------
+  PROCEDURE p_pedidos_cater(P_VERSION       IN  NUMBER,
+                            P_HEADER        IN  VARCHAR2,
+                            P_DATA          IN OUT VARCHAR2,
+                            p_name_cursor   IN  VARCHAR2,
+                            P_OUT_FILE      IN OUT  UTL_FILE.FILE_TYPE,
+                            P_DATE_FROM     IN  DATE,
+                            P_DATE_UNTIL    IN  DATE,
+                            P_STATUS        IN  VARCHAR2,
+                            P_TYPE_ORDER    IN  VARCHAR2,
+                            P_REASON        IN  VARCHAR2,
+                            P_DATE_COMP_PP  IN  DATE,
+                            P_SENTENCIA     OUT VARCHAR2,
+                            P_ERROR         OUT VARCHAR2) IS
+
+   /*****************************************************************************/
+   /*                     VARIABLES                                             */
+   /*****************************************************************************/
+   -- para precios
+    precio_final      NUMBER;
+    subs1             NUMBER;--ECOM-1188
+    total_financiado  NUMBER;
+    impuesto          NUMBER;
+    precio_lista_con_Imp Ws_Order_Ecom_Amounts.Oea_List_Amount%type;       --- ECOM-5307
+    Precio_Obj_Con_Imp   Ws_Order_Ecom_Amounts.Oea_Standard_Amount%type;   --- ECOM-5307
+    Descuento_Con_Imp    Ws_Order_Ecom_Amounts.Oea_Special_Amount%type;    --- ECOM-5307
+    Subsidize_Con_imp    Ws_Order_Ecom_Amounts.Oea_Subsidize_Amount%type;  --- ECOM-5307
+    Imp_Percent          Ws_Order_Ecom_Amounts.Oea_Imp_Percent%type;       --- ECOM-5307
+
+    --para ver cambio de T. Neg desde PP
+    hubo_cambio_plan  VARCHAR2(2);
+    fecha_de_cambio   DATE;
+    negocio_anterior VARCHAR2(2);
+
+    -- para estado y traduccion
+    v_estado          CG_REF_CODES.rv_high_value %TYPE;
+    v_est_max         TELE_STATUS_ORDERS.sao_chs_id %TYPE;
+
+    -- para ver planes y montos
+    v_flag            VARCHAR2(1);
+    v_plan_origen     cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_origen    NUMBER;
+    v_plan_destino    cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_destino   NUMBER;
+
+    -- para niveles de precios
+    v_valida_nivel    VARCHAR2(5);
+    v_nivel_real      VARCHAR2(5);
+
+    -- para pedidos con tarjeta
+    v_tarjeta         collection_entities.coe_name%TYPE;
+    v_banco           t_banks.bnk_name%TYPE;
+    v_track_id        NUMBER;
+
+    -- para pickup
+    v_fecha_entrega   DATE;
+    v_hora_entrega    VARCHAR2(10);
+    v_tipo_venta      VARCHAR2(50);
+
+    --salida
+    I                 NUMBER := 1;
+    v_linea           VARCHAR2(5000) := NULL;
+    c_cursor          sys_refcursor;
+
+    -- PARA CADA FILA
+    Linea                     Tele_Order_Headers.Orh_Cellular_Number%type;
+    Cuenta                    Tele_Order_Headers.Orh_Acc_Id%type;
+    Nombre_y_Apellido         VARCHAR2(70);      --- PDEC-8169
+    ReceptorAlternativo       VARCHAR2(70);      --- PDEC-8169
+    Tipo_Documento            Tele_Order_Headers.Orh_Document_Type%type;
+    Documento                 client.clt_identification_number%type;       --- PDEC-10182
+    Documento_Orh             Tele_Order_Headers.Orh_Document_Number%type; --- PDEC-10182
+    Dni_Receptor              Tele_Order_headers.Orh_Receptor_Dni%type;   --- PDEC-8169
+    Sexo                      Client.Clt_Sex%type;
+    Edad                      number(3);
+    Fecha_De_Nacimiento       Client.Clt_Birth_Date%type;
+    Region_                   Market_Codes.Mkc_Reg_Code%type;
+    Negocio                   Tele_Order_Headers.Orh_Bco_Cbt_Id%type;
+    Id_Pedido_Stl             Tele_Order_Headers.Orh_Id%type;
+    Remito_Sap                Tele_Order_Headers.Orh_Remit%type;
+    Id_Tracking               Tele_Order_Headers.Orh_Tracking_Code%type;
+    Fecha_Creacion            Tele_Status_Orders.Sao_Date%type;
+    estado                    Tele_Status_Orders.Sao_Chs_Id%type;        --- ECOM-7996
+    Numero_Tickler_Pedeco     Ticklers.Tck_Id%type;
+    Sku                       Tele_Order_Accesories.Oac_Pro_Id%type;
+    Descripcion_Sku           Products.Pro_Description%type;
+    Marca                     Products.Pro_Mark%type;
+    Nivel_Precio_Pedido       Tele_Order_Accesories.Oac_Pty_Id%type;
+    Precio_Lista_Sin_Imp      Tele_Order_Accesories.Oac_List_Ammount%type;
+    Subs3                     Tele_Order_Accesories.Oac_Special_Ammount%type;
+    Subs10                    Tele_Order_Accesories.Oac_Subsidize_Ammount%type;
+    Dif_Pl_Po                 Tele_Order_Accesories.Oac_Subsidize_Ammount%type;
+    Forma_De_Pago             Tele_Order_Accesories.Oac_Coe_Cet_Id%type;
+    Id_Forma_Pago             Tele_Order_Accesories.Oac_Pay_Id%type;
+    Cantidad_De_Cuotas        Tele_Order_Accesories.Oac_Pay_Installments%type;
+    Cantidad_De_Cuotas_Reales Payments.pay_real_installments%type;
+    Percent_                  Tele_Order_Accesories.Oac_Pay_Percent%type;
+    Riesgo                    Client.Clt_Rsk_Id%type;
+    Cod_Aprob                 Tele_Order_Headers.Orh_Eco_Id%type;
+    Id_Reserva                Tele_Order_Headers.Orh_Pre_Id%type;
+    Nombre_Cac                Ws_Tele_Order_Ecom.Toe_Cac_Name%type;
+    Plan_Origen               Ws_Tele_Order_Ecom.Toe_Cpl_Rpl_Id_Ant%type;
+    Plan_Origen_Amount        Ws_Tele_Order_Ecom.Toe_Chp_Amount_Ant%type;
+    Plan_Destino              Ws_Tele_Order_Ecom.Toe_Cpl_Rpl_Id_New%type;
+    Plan_Destino_Amount       Ws_Tele_Order_Ecom.Toe_Chp_Amount_New%type;
+    Entidad_Tarjeta           Tele_Order_Accesories.Oac_Coe_Id%type;
+    Category_Cc               Ws_Tele_Order_Ecom.Toe_Category_Cc%TYPE;      --- ECOM-2281
+    Award_Id                  Ws_Ecom_Order_Award.Eoa_Mia_Id%TYPE;          --- PDEC-2887
+    Award_Costo               Ws_Ecom_Order_Award.Eoa_Mia_Cost%TYPE;        --- PDEC-2887
+    Award_Puntos              Ws_Ecom_Order_Award.Eoa_Mia_Points%TYPE;      --- PDEC-2887
+    Award_Pendiente           Ws_Tele_Order_Ecom.Toe_Award_Pendiente%TYPE;  --- ECOM-2281
+    Award_Disponible          Ws_Tele_Order_Ecom.Toe_Award_Disp%TYPE;       --- ECOM-2281
+    Award_Descripcion         Ws_Ecom_Order_Award.Eoa_Mia_Description%TYPE; --- PDEC-2887
+    v_domicilio               varchar2(1);                                  --- ECOM-1192
+    v_pro_type                products.pro_type%TYPE;           --- ECOM-9853
+    --v_acme_flag               products.pro_acme_flag%TYPE;      --- PDEC-2359
+    --v_supplier_code           products.pro_supplier_code%TYPE;  --- PDEC-2359
+    v_seriado                 varchar2(1);                      --- ECOM-9853
+    v_trafica                 varchar2(1);                      --- ECOM-9853
+    v_producto                varchar2(12);
+    v_tipo_pedido             varchar2(20);                     --- PDEC-719
+    v_oac_cont                number;                           --- PDEC-719
+    v_trafico                 number := 0;                      --- PDEC-2359
+    v_origen                  VARCHAR2(2);                      --- PDEC-7709
+    v_cont                    NUMBER := 0;                      --- PDEC-7709
+    Rango_Score               VARCHAR2(2);                      --- PDEC-8169
+    Puntos_Score              NUMBER(5);                        --- PDEC-8169
+  BEGIN
+      IF p_data = 'N' THEN
+        p_sentencia := 'SE GRABA EL ENCABEZADO DEL ARCHIVO ' ||
+                     p_name_cursor || '...';
+        UTL_FILE.PUT_LINE(P_OUT_FILE, p_header, TRUE);
+        p_data    := 'S';
+      END IF;
+
+  IF P_VERSION=1 THEN
+     p_sentencia:= 'Abrimos el cursor viejo';
+   /*****************************************************************************/
+   /*                     VIEJO CURSOR CATER                                    */
+   /*****************************************************************************/
+
+     open C_CURSOR for
+           SELECT orh1.orh_cellular_number LINEA,
+             orh1.orh_acc_id CUENTA,
+               -- PDEC-10182
+             -- REPLACE(CONCAT(CONCAT(orh1.orh_client_first_name, ' '),orh1.orh_client_last_name),';','') AS NOMBRE_Y_APELLIDO,
+             REPLACE(Concat(Concat(Clt.Clt_Name, ' '), Clt.Clt_Surname),';','') As NOMBRE_Y_APELLIDO,
+             -- orh1.orh_document_type TIPO_DOCUMENTO,
+             Clt.Clt_Identification_Type AS TIPO_DOCUMENTO,
+             Orh1.orh_document_number As DOCUMENTO_ORH,
+             Clt.Clt_Identification_Number As DOCUMENTO,
+               -- FIN PDEC-10182
+             clt.clt_sex SEXO,
+             REPLACE(CONCAT(CONCAT(orh1.orh_receptor_first_name, ' '),orh1.orh_receptor_last_name),';','') AS ReceptorAlternativo,  --- PDEC-8169
+             orh1.orh_receptor_dni Dni_Receptor,                                                                                    --- PDEC-8169
+             TRUNC(MONTHS_BETWEEN(TO_DATE(TO_CHAR(SYSDATE, 'DD/MM/YYYY'),'DD/MM/YYYY'),clt.clt_birth_date) / 12,0) EDAD,
+             clt.clt_birth_date FECHA_DE_NACIMIENTO,
+             mkc.mkc_reg_code REGION_,
+             orh1.ORH_BCO_CBT_ID NEGOCIO,
+             orh1.orh_id ID_PEDIDO_STL,
+             orh1.orh_remit REMITO_SAP,
+             orh1.ORH_TRACKING_CODE ID_TRACKING,
+             sao.sao_date FECHA_CREACION,
+             sao.sao_chs_id ESTADO,
+             null NUMERO_TICKLER_PEDECO,
+             oac.oac_pro_id SKU,
+             pro_description DESCRIPCION_SKU,
+             DECODE(pro_mark,'LG', pro_mark,concat(substr(upper(pro_mark), 1, 1),substr(lower(pro_mark), 2))) MARCA,
+             OAC.oac_pty_id AS NIVEL_PRECIO_PEDIDO,
+             OAC.Oac_List_Ammount AS PRECIO_LISTA_SIN_IMP,
+             ABS((nvl(OAC.Oac_Special_Ammount, 0))) SUBS3,
+             ABS((nvl(OAC.Oac_Subsidize_Ammount, 0))) SUBS10,
+             OAC.Oac_Subsidize_Ammount AS DIF_PL_PO,
+             OAC.Oac_Coe_Cet_Id AS FORMA_DE_PAGO,
+             OAC.Oac_pay_id AS ID_FORMA_PAGO,
+             OAC.Oac_Pay_Installments AS CANTIDAD_DE_CUOTAS,
+             nvl(pay.pay_real_installments,OAC.Oac_Pay_Installments) AS CANTIDAD_DE_CUOTAS_REALES,
+             OAC.oac_pay_percent AS PERCENT_,
+             clt.clt_rsk_id RIESGO,
+             orh1.orh_eco_id COD_APROB,
+             -----
+             orh1.orh_pre_id ID_RESERVA,
+             toe.toe_cac_name NOMBRE_CAC,
+             -----
+             toe.Toe_Cpl_Rpl_Id_Ant Plan_Origen,
+             toe.Toe_Chp_Amount_Ant Plan_Origen_Amount,
+             toe.Toe_Cpl_Rpl_Id_New Plan_Destino,
+             toe.Toe_Chp_Amount_New Plan_Destino_Amount,
+             oac.Oac_Coe_Id Entidad_Tarjeta,
+             -----
+             toe.toe_category_cc            Category_Cc,             --- ECOM-2281
+             toe.toe_award_id               Award_Id,                --- ECOM-2281
+             toe.toe_mia_cost               Award_Costo,             --- ECOM-2281
+             toe.toe_cem_quantity           Award_Puntos,            --- ECOM-2281
+             toe.toe_award_pendiente        Award_Pendiente,         --- ECOM-2281
+             toe.toe_award_disp             Award_Disponible,        --- ECOM-2281
+             toe.toe_mia_description        Award_Descripcion,        --- ECOM-2281
+             -----
+             toe.toe_range_scoring Rango_Score,        -- PDEC-8169
+             toe.toe_clt_scoring   Puntos_Score        -- PDEC-8169
+        FROM tele_order_headers       orh1,
+             TELE_STATUS_ORDERS       SAO,
+             tele_order_accesories    OAC,
+             client                   clt,
+             cellulars                clu,
+             block_codes              blc,
+             market_codes             mkc,
+             products                 pro,
+             payments                 pay,
+             ws_tele_order_ecom       toe
+       WHERE orh1.orh_id = sao.sao_orh_id
+         AND orh1.orh_clt_id = clt.clt_id
+         AND oac.oac_orh_id = orh1.orh_id
+         AND clu.clu_blc_block_code = blc.blc_block_code
+         AND blc.blc_mkc_market_code = mkc.mkc_market_code
+         AND clu_cellular_number = orh1.Orh_Cellular_Number
+         AND pro.pro_id = oac.oac_pro_id
+         AND oac.oac_pay_id = pay.pay_id
+         AND toe.toe_orh_id = orh1.orh_id
+         AND sao_date > P_DATE_FROM
+         AND sao_date < P_DATE_UNTIL
+         AND sao_chs_id in (177, 519)
+         AND orh_oso_id = 'E1'
+         AND INSTR(P_REASON,'$'||oac_rsn_id||'$') > 0  --- = 'VENTER' ---ECOM-9853
+       ORDER BY orh_id ASC;
+
+  ELSE
+     p_sentencia:= 'Abrimos el cursor nuevo';
+   /*****************************************************************************/
+   /*                     NUEVO CURSOR CATER                                    */
+   /*****************************************************************************/
+     open C_CURSOR for
+     With tmp1 As (
+                Select /*+ materialize ordered use_nl(Sao,Orh) use_nl(Orh,Oac)  use_nl(Oac,Pay)  use_nl(Oac,Pro)  use_nl(Orh,toe)
+               index_desc(Sao,SAO_DATE_IDX)     no_nlj_batching(Sao)
+               index_desc(Orh,orh_pk)           no_nlj_batching(Orh)
+               index_desc(Oac,OAC_ORH_CELL_IDX) no_nlj_batching(Oac)
+               index_desc(Pro,pro_pk)           no_nlj_batching(Pro)
+               index_desc(Toe,UK_TOE_ORH_ID)    no_nlj_batching(Toe)
+               index_desc(Pay,pay_pk)           no_nlj_batching(Pay)*/
+               Orh.Orh_Cellular_Number,
+               Orh.Orh_Acc_Id,
+               Orh.Orh_Clt_Id,                 --- PDEC-10533
+               --Orh.Orh_Client_First_Name,
+               --Orh.Orh_Client_Last_Name,
+               --Orh.Orh_Document_Type,
+               Orh.Orh_Document_Number,
+               Orh.Orh_Receptor_First_Name,    --- PDEC-8169
+               Orh.Orh_Receptor_Last_Name,     --- PDEC-8169
+               Orh.Orh_Receptor_Dni,           --- PDEC-8169
+               Orh.Orh_Bco_Cbt_Id,
+               Orh.Orh_Id,
+               Orh.Orh_Remit,
+               Orh.Orh_Tracking_Code,
+               Orh.Orh_Eco_Id,
+               Orh.Orh_Pre_Id,
+               Sao.Sao_Date,
+               Sao.Sao_Chs_Id,
+               Oac.Oac_Pro_Id,
+               Pro.Pro_Description,
+               Pro.Pro_Mark,
+               Oac.Oac_Pty_Id,
+               Oac.Oac_Coe_Id,
+               Oac.Oac_List_Ammount,
+               Oac.Oac_Special_Ammount,
+               Oac.Oac_Subsidize_Ammount,
+               Oac.Oac_Coe_Cet_Id,
+               Oac.Oac_Pay_Id,
+               Oac.Oac_Pay_Installments,
+               Pay.Pay_Real_Installments,
+               Oac.Oac_Pay_Percent,
+               Toe.Toe_Cac_Name,
+               -----
+               Toe.Toe_Cpl_Rpl_Id_Ant,
+               Toe.Toe_Chp_Amount_Ant,
+               Toe.Toe_Cpl_Rpl_Id_New,
+               Toe.Toe_Chp_Amount_New,
+               -----
+               toe.toe_category_cc,         --- PDEC-2887
+               --toe.toe_award_id,          --- PDEC-2887
+               --toe.toe_mia_cost,          --- PDEC-2887
+               --toe.toe_cem_quantity,      --- PDEC-2887
+               --toe.toe_award_pendiente,   --- PDEC-2887
+               --toe.toe_award_disp,        --- PDEC-2887
+               --toe.toe_mia_description    --- PDEC-2887
+               toe.toe_range_scoring,        -- PDEC-8169
+               toe.toe_clt_scoring           -- PDEC-8169
+          From Tele_Status_Orders    Sao,
+               Tele_Order_Headers    Orh,
+               Tele_Order_Accesories Oac,--Tele_Order_Details    Ord,
+               Ws_Tele_Order_Ecom    Toe,--Tele_Order_Payments   Orp,
+               Payments              Pay,
+               Products              Pro
+         Where Orh.Orh_Id = Sao.Sao_Orh_Id
+           And Oac.Oac_Orh_Id = Orh.Orh_Id
+           And Pro.Pro_Id = Oac.Oac_Pro_Id
+           And Pay.Pay_Id = Oac.Oac_Pay_Id
+           And Toe.Toe_Orh_Id = Orh.Orh_Id
+           And Sao.Sao_Date > P_DATE_FROM
+           And Sao.Sao_Date < P_DATE_UNTIL
+           And Instr(P_STATUS, '#' || Sao.Sao_Chs_Id || '#') > 0
+           And Orh.Orh_Oso_Id = P_TYPE_ORDER
+           And INSTR(P_REASON,'$'||Oac.Oac_Rsn_Id||'$') > 0 -- = P_REASON  ECOM-9853
+        )
+        Select /*+ ordered full(t1) parallel(t1,8) use_nl(t1,clu)
+               index(Clu,CLU_PK) use_nl(Clu,Blc)
+               index(Acc,Acc_pk) use_nl(Clu,Acc)
+               index(Clt,CLt_PK) use_nl(Acc,Clt)
+               index(Blc,BLC_PK) use_nl(Clu,Blc)
+               index(Mkc,MKC_PK) use_nl(Blc,Mkc)
+               */
+               t1.Orh_Cellular_Number Linea,
+               t1.Orh_Acc_Id Cuenta,
+              -- PDEC-10533
+              -- Replace(Concat(Concat(t1.Orh_Client_First_Name, ' '), t1.Orh_Client_Last_Name),';','') As Nombre_y_Apellido,
+               REPLACE(Concat(Concat(Clt.Clt_Name, ' '), Clt.Clt_Surname),';','') As Nombre_y_Apellido,   
+               -- t1.Orh_Document_Type Tipo_Documento,
+               Clt.Clt_Identification_Type AS Tipo_Documento,                                             
+               t1.Orh_Document_Number AS Documento_Orh,
+               Clt.Clt_Identification_Number As Documento,
+                 -- FIN PDEC-10533
+               Clt.Clt_Sex Sexo,
+               Replace(Concat(Concat(t1.Orh_Receptor_First_Name, ' '), t1.Orh_Receptor_Last_Name),';','') As ReceptorAlternativo,  --- PDEC-8169
+               t1.Orh_Receptor_Dni Dni_Receptor,                                                                                   --- PDEC-8169
+               Trunc(Months_Between(To_Date(To_Char(Sysdate, 'DD/MM/YYYY'),'DD/MM/YYYY'),Clt.Clt_Birth_Date) / 12,0) Edad,
+               Clt.Clt_Birth_Date Fecha_De_Nacimiento,
+               Mkc.Mkc_Reg_Code Region_,
+               t1.Orh_Bco_Cbt_Id Negocio,
+               t1.Orh_Id Id_Pedido_Stl,
+               t1.Orh_Remit Remito_Sap,
+               t1.Orh_Tracking_Code Id_Tracking,
+               t1.Sao_Date Fecha_Creacion,
+               t1.Sao_Chs_Id estado,                --- ECOM-7996
+               Null Numero_Tickler_Pedeco,
+               t1.Oac_Pro_Id Sku,
+               t1.Pro_Description Descripcion_Sku,
+               Decode(t1.Pro_Mark,'LG',t1.Pro_Mark,Concat(Substr(Upper(t1.Pro_Mark), 1, 1), Substr(Lower(t1.Pro_Mark), 2))) Marca,
+               t1.Oac_Pty_Id As Nivel_Precio_Pedido,
+               t1.Oac_List_Ammount As Precio_Lista_Sin_Imp,
+               Abs((Nvl(t1.Oac_Special_Ammount, 0))) Subs3,
+               Abs((Nvl(t1.Oac_Subsidize_Ammount, 0))) Subs10,
+               Nvl(t1.Oac_Subsidize_Ammount,0) As Dif_Pl_Po,
+               t1.Oac_Coe_Cet_Id As Forma_De_Pago,
+               t1.Oac_Pay_Id As Id_Forma_Pago,
+               t1.Oac_Pay_Installments As Cantidad_De_Cuotas,
+               Nvl(t1.Pay_Real_Installments, t1.Oac_Pay_Installments) As Cantidad_De_Cuotas_Reales,
+               t1.Oac_Pay_Percent As Percent_,
+               Clt.Clt_Rsk_Id Riesgo,
+               t1.Orh_Eco_Id Cod_Aprob,
+               t1.Orh_Pre_Id Id_Reserva,
+               t1.Toe_Cac_Name Nombre_Cac,
+               -----
+               t1.Toe_Cpl_Rpl_Id_Ant Plan_Origen,
+               t1.Toe_Chp_Amount_Ant Plan_Origen_Amount,
+               t1.Toe_Cpl_Rpl_Id_New Plan_Destino,
+               t1.Toe_Chp_Amount_New Plan_Destino_Amount,
+               t1.Oac_Coe_Id Entidad_Tarjeta,
+               -----
+               t1.toe_category_cc            Category_Cc,         --- PDEC-2887
+               --t1.toe_award_id               Award_Id,          --- PDEC-2887
+               --t1.toe_mia_cost               Award_Costo,       --- PDEC-2887
+               --t1.toe_cem_quantity           Award_Puntos,      --- PDEC-2887
+               --t1.toe_award_pendiente        Award_Pendiente,   --- PDEC-2887
+               --t1.toe_award_disp             Award_Disponible,  --- PDEC-2887
+               --t1.toe_mia_description        Award_Descripcion  --- PDEC-2887
+               t1.toe_range_scoring Rango_Score,    -- PDEC-8169
+               t1.toe_clt_scoring Puntos_Score      -- PDEC-8169
+          From tmp1                  t1,
+               Cellulars             Clu,
+               --Accounts              Acc,                     --- PDEC-10533
+               Client                Clt,
+               Block_Codes           Blc,
+               Market_Codes          Mkc
+         Where Clu.Clu_Cellular_Number = t1.Orh_Cellular_Number
+           And t1.Orh_clt_id = Clt.Clt_Id                        --- PDEC-10533
+          /* And Acc.Acc_Id = Clu.Clu_Acc_Id                     --- PDEC-10533
+             And Clt.Clt_Id = Acc.Acc_Clt_Id*/                   --- PDEC-10533
+           And Blc.Blc_Block_Code = Clu.Clu_Blc_Block_Code
+           And Mkc.Mkc_Market_Code = Blc.Blc_Mkc_Market_Code
+        Order By t1.Orh_Id Asc;
+  END IF;
+
+  p_sentencia:='Recorremos el cursor';
+
+  LOOP
+      FETCH c_cursor INTO
+            Linea, Cuenta, Nombre_y_Apellido, Tipo_Documento, Documento_Orh, Documento,
+            Sexo, ReceptorAlternativo, Dni_Receptor, Edad, Fecha_De_Nacimiento, Region_, Negocio,   --- PDEC-8169
+            Id_Pedido_Stl, Remito_Sap, Id_Tracking, Fecha_Creacion,estado, Numero_Tickler_Pedeco,   --- ECOM-7996
+            Sku, Descripcion_Sku, Marca,Nivel_Precio_Pedido, Precio_Lista_Sin_Imp,
+            Subs3, Subs10, Dif_Pl_Po,Forma_De_Pago, Id_Forma_Pago,
+            Cantidad_De_Cuotas, Cantidad_De_Cuotas_Reales, Percent_,Riesgo,Cod_Aprob,
+            Id_Reserva, Nombre_Cac, Plan_Origen, Plan_Origen_Amount, Plan_Destino,
+            Plan_Destino_Amount,Entidad_Tarjeta,
+            Category_Cc,Rango_Score,Puntos_Score; -- PDEC-8169 --,Award_Id, Award_Costo, Award_Puntos, Award_Pendiente, Award_Disponible, Award_Descripcion; --- PDEC-2887
+      EXIT WHEN c_cursor%NOTFOUND;
+              p_sentencia := 'setea variables';
+              v_estado         := NULL;
+              v_est_max        := NULL;
+              v_flag           := NULL;
+              precio_final     := NULL;
+              total_financiado := NULL;
+              SUBS1            := NULL;
+              v_plan_origen    := PLAN_ORIGEN;             --- ECOM-1188
+              v_monto_origen   := PLAN_ORIGEN_AMOUNT;      --- ECOM-1188
+              v_plan_destino   := PLAN_DESTINO;            --- ECOM-1188
+              v_monto_destino  := PLAN_DESTINO_AMOUNT;     --- ECOM-1188
+              v_valida_nivel   := NULL;
+              v_nivel_real     := NULL;
+              v_banco          := NULL;
+              v_tarjeta        := NULL;
+              v_tipo_venta     := NULL;
+              v_fecha_entrega  := '';
+              v_hora_entrega   := '';
+              v_track_id       := NULL;
+              Award_Pendiente  := NULL;       --- PDEC-4581
+              Award_Disponible := NULL;       --- PDEC-4581
+              Award_Id         := NULL;       --- PDEC-4581
+              Award_Descripcion := NULL;      --- PDEC-4581
+              Award_Puntos     := NULL;       --- PDEC-4581
+              Award_Costo      := NULL;       --- PDEC-4581
+              --- PDEC-8169
+              IF Documento_Orh = Dni_Receptor THEN
+                 ReceptorAlternativo := '';
+              ELSE
+                 ReceptorAlternativo := UPPER(ReceptorAlternativo);
+              END IF;
+              --- fin PDEC-8169
+              v_linea := i || ';';
+              ---  ECOM-9853 ------------------------------------
+              BEGIN
+                SELECT pro_type   --, pro_acme_flag, pro_supplier_code
+                  INTO v_pro_type --, v_acme_flag, v_supplier_code
+                  FROM products
+                 WHERE pro_id = Sku;
+                ---
+                IF v_pro_type = 'ACNSE' OR v_pro_type = 'ACCES' THEN   --- PDEC-2359
+                   v_producto := 'Accesorio';
+                   SELECT INSTR(mpr_value, '$' || Sku || '$')
+                     INTO v_trafico
+                     FROM maveric_parameters
+                    WHERE mpr_id = 'WS_PROD_TRAFICO';
+                   IF v_trafico > 0 THEN
+                      v_trafica := 'Y';
+                   ELSE
+                      v_trafica := 'N';
+                   END IF;
+                   ---
+                   IF v_pro_type = 'ACNSE' THEN
+                      v_seriado := 'Y';
+                   ELSE
+                      v_seriado := 'N';
+                   END IF;
+                ---
+                ELSIF v_pro_type = 'TERMI' THEN
+                   v_producto := 'Terminal';
+                   v_seriado := 'Y';
+                   v_trafica := 'Y';
+                END IF;                                              --- FIN PDEC-2359
+                --
+                IF v_producto = 'Terminal' THEN   --- PDEC-2887
+                   BEGIN       --- PDEC-4579
+                       SELECT SUBSTR(TOE_AWARD_PENDIENTE,INSTR(TOE_AWARD_PENDIENTE,'T',1) + 1,1), SUBSTR(TOE_AWARD_DISP,INSTR(TOE_AWARD_DISP,'T',1) + 1,1)
+                         INTO Award_Pendiente, Award_Disponible
+                         FROM ws_tele_order_ecom
+                        WHERE toe_orh_id = Id_Pedido_Stl;
+                       ---
+                       SELECT eoa_mia_id, eoa_mia_description, eoa_mia_points, eoa_mia_cost
+                         INTO Award_Id, Award_Descripcion, Award_Puntos, Award_Costo
+                         FROM ws_ecom_order_award
+                        WHERE eoa_orh_id = Id_Pedido_Stl
+                          AND eoa_prod_type = v_pro_type;
+                   EXCEPTION    --- PDEC-4579
+                       WHEN NO_DATA_FOUND THEN
+                            SELECT SUBSTR(TOE_AWARD_PENDIENTE,INSTR(TOE_AWARD_PENDIENTE,'T',1) + 1,1), SUBSTR(TOE_AWARD_DISP,INSTR(TOE_AWARD_DISP,'T',1) + 1,1), -- PDEC-4738
+                                   toe_award_id, toe_mia_description,
+                                   toe_cem_quantity, toe_mia_cost
+                              INTO Award_Pendiente, Award_Disponible, Award_Id, Award_Descripcion, Award_Puntos, Award_Costo
+                              FROM ws_tele_order_ecom te
+                             WHERE te.toe_orh_id = Id_Pedido_Stl;
+                   END;         --- FIN PDEC-4579
+                ELSE
+                   v_pro_type := 'ACCES';
+                   BEGIN  --- PDEC-4579
+                      SELECT SUBSTR(TOE_AWARD_PENDIENTE,INSTR(TOE_AWARD_PENDIENTE,'A',1) + 1,1), SUBSTR(TOE_AWARD_DISP,INSTR(TOE_AWARD_DISP,'A',1) + 1,1)
+                        INTO Award_Pendiente, Award_Disponible
+                        FROM ws_tele_order_ecom
+                       WHERE toe_orh_id = Id_Pedido_Stl;
+                      --
+                      SELECT eoa_mia_id, eoa_mia_description, eoa_mia_points, eoa_mia_cost
+                        INTO Award_Id, Award_Descripcion, Award_Puntos, Award_Costo
+                        FROM ws_ecom_order_award
+                       WHERE eoa_orh_id = Id_Pedido_Stl
+                         AND eoa_prod_type = v_pro_type;
+                   EXCEPTION   --- PDEC-4579
+                       WHEN NO_DATA_FOUND THEN
+                            SELECT SUBSTR(TOE_AWARD_PENDIENTE,INSTR(TOE_AWARD_PENDIENTE,'A',1) + 1,1), SUBSTR(TOE_AWARD_DISP,INSTR(TOE_AWARD_DISP,'A',1) + 1,1), -- PDEC-4738
+                                   toe_award_id, toe_mia_description,
+                                   toe_cem_quantity, toe_mia_cost
+                              INTO Award_Pendiente, Award_Disponible, Award_Id, Award_Descripcion, Award_Puntos, Award_Costo
+                              FROM ws_tele_order_ecom te
+                             WHERE te.toe_orh_id = Id_Pedido_Stl;
+                   END;        --- FIN PDEC-4579
+                END IF;
+                --
+                -- FIN PDEC-2887
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                     NULL;
+              END;
+              ---  FIN  ECOM-9853 -----------------------------------------------
+          BEGIN
+
+            IF estado ='519' OR (Remito_Sap is not null and estado ='177') THEN   --- ECOM-6505  --- ECOM-7996
+               --- PDEC-719
+                  SELECT COUNT(*)
+                    INTO v_oac_cont
+                    FROM tele_order_accesories
+                   WHERE oac_orh_id = Id_Pedido_Stl
+                     AND INSTR(P_REASON,'$'||Oac_Rsn_Id||'$') > 0;
+                   ---
+                   IF v_oac_cont > 1 THEN
+                      v_tipo_pedido := 'Combinado';
+                   ELSE
+                      v_tipo_pedido := 'Simple';
+                   END IF;
+               --- FIN PDEC-719
+               p_sentencia := 'Buscamos el estado actual y su traduccion.';
+               --ECOM-1188
+               p_obtiene_traduccion_estado( p_id_pedido_stl => ID_PEDIDO_STL,
+                                            p_est_max       => v_est_max,
+                                            p_estado        => v_estado,
+                                            p_sentencia     => p_sentencia
+                                          );
+               --ECOM-5307
+               p_sentencia := 'Obtenemos montos,precios e impuestos del equipo';
+               BEGIN
+                 SELECT round(oea_final_amount,2), round(oea_standard_amount,2),
+                        round(oea_subsidize_amount,2), round(oea_special_amount,2),
+                        round(oea_list_amount,2), round(oea_imp_percent,2)
+                   INTO total_financiado, Precio_Obj_Con_Imp,
+                        Subsidize_Con_imp, Descuento_Con_Imp,
+                        precio_lista_con_Imp, Imp_Percent
+                   FROM Ws_Order_Ecom_Amounts OEA
+                  WHERE oea_orh_id = Id_Pedido_Stl
+                    AND oea_pro_id = SKU;
+                 ---
+                 SUBS10 := ROUND(Subsidize_Con_imp / (1 + Imp_Percent/100),2);
+                 SUBS3  := ROUND(Descuento_Con_Imp / (1 + Imp_Percent/100),2);
+                 precio_lista_con_Imp := precio_lista_con_Imp - Subsidize_Con_imp;
+                 Precio_Lista_Sin_Imp := ROUND(precio_lista_con_Imp / (1 + Imp_Percent/100),2);
+                 precio_final := Precio_Obj_Con_Imp - Descuento_Con_Imp;
+                 ---
+               EXCEPTION
+                  WHEN NO_DATA_FOUND THEN
+                      p_sentencia := 'Buscamos el impuesto correspondiente al equipo';
+                      p_obtiene_impuesto(P_FECHA_CREACION => Fecha_Creacion,
+                                         P_SKU           => SKU,
+                                         P_IMPUESTO      => impuesto,
+                                         p_sentencia     => p_sentencia);
+                      ---
+                      Precio_Lista_Sin_Imp := ROUND(Precio_Lista_Sin_Imp - nvl(SUBS10, 0),2);
+                      precio_lista_con_Imp := ROUND(Precio_Lista_Sin_Imp * impuesto,2);
+                      precio_final     := ROUND((PRECIO_LISTA_SIN_IMP - nvl(SUBS3, 0)) * impuesto,2);
+                      total_financiado := precio_final * ( 1 + PERCENT_ / 100);
+               END;    --- FIN  ECOM-5307
+               ---
+               p_sentencia := 'Buscamos datos de plan origen y destino y sus montos';
+               --- ECOM-1188
+               IF PLAN_ORIGEN  IS NOT NULL THEN
+                     IF PLAN_DESTINO is not null THEN
+                         v_flag := 'S';
+                     ELSE
+                         v_flag := 'N';
+                     END IF;
+
+               ELSE --- ECOM-1188
+                      BEGIN
+                         -- Busco si hubo cambio de plan el dia que se confirmo el pedido
+                         SELECT CellP.CPL_RPL_ID, 'S'
+                           INTO v_plan_destino, v_flag
+                           FROM cellular_plans     CellP
+                          WHERE CellP.CPL_CLU_CELLULAR_NUMBER = LINEA
+                            AND CellP.CPL_STG_ID = 'AH'
+                            AND CellP.Cpl_Usr_Id = 'WS_ECOM'
+                            AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                                trunc(FECHA_CREACION)
+                            AND CellP.Cpl_Start_Date =
+                               (SELECT MAX(CellP.Cpl_Start_Date)
+                                  FROM cellular_plans     CellP
+                                 WHERE CellP.CPL_CLU_CELLULAR_NUMBER = LINEA
+                                   AND CellP.CPL_STG_ID = 'AH'
+                                   AND CellP.Cpl_Usr_Id = 'WS_ECOM'
+                                   AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                                       trunc(FECHA_CREACION));
+
+                         -- Si hubo cambio de plan, busco el plan origen
+                          SELECT CellP.CPL_RPL_ID
+                            INTO v_plan_origen
+                            FROM cellular_plans     CellP
+                           WHERE CellP.CPL_CLU_CELLULAR_NUMBER = LINEA
+                             AND CellP.CPL_STG_ID = 'AH'
+                             AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                                 trunc(FECHA_CREACION)
+                             AND CellP.Cpl_Start_Date =
+                                 (SELECT MIN(CellP.Cpl_Start_Date)
+                                    FROM cellular_plans     CellP
+                                   WHERE CellP.CPL_CLU_CELLULAR_NUMBER = LINEA
+                                     AND CellP.CPL_STG_ID = 'AH'
+                                     AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                                         trunc(FECHA_CREACION));
+
+                          -- Calculo monto planes
+
+                          p_obtiene_monto_plan ( P_FECHA_CREACION  => FECHA_CREACION,
+                                                 P_PLAN            => v_plan_origen,
+                                                 P_MONTO           => v_monto_origen,
+                                                 p_sentencia       => p_sentencia);
+
+                          p_obtiene_monto_plan ( P_FECHA_CREACION  => FECHA_CREACION,
+                                                 P_PLAN            => v_plan_destino,
+                                                 P_MONTO           => v_monto_destino,
+                                                 p_sentencia       => p_sentencia);
+
+
+                        EXCEPTION
+                            WHEN NO_DATA_FOUND THEN
+                              BEGIN
+                                -- Si no tuvo cambio de plan, busco el plan del cliente al momento de realizar la compra
+                                SELECT CPL_RPL_ID, 'N'
+                                  INTO v_plan_origen, v_flag
+                                  FROM cellular_plans
+                                 WHERE cpl_clu_cellular_number = LINEA
+                                   AND cpl_stg_id = 'AH'
+                                   AND trunc(FECHA_CREACION) BETWEEN trunc(cpl_add_date) AND
+                                       trunc(cpl_end_date)
+                                   AND cpl_start_date =
+                                       (SELECT MAX(cpl_start_date)
+                                          FROM cellular_plans
+                                         WHERE cpl_clu_cellular_number = LINEA
+                                           AND cpl_stg_id = 'AH'
+                                           AND trunc(FECHA_CREACION) BETWEEN
+                                               trunc(cpl_add_date) AND trunc(cpl_end_date));
+
+                                  p_obtiene_monto_plan ( P_FECHA_CREACION  => FECHA_CREACION,
+                                                         P_PLAN            => v_plan_origen,
+                                                         P_MONTO           => v_monto_origen,
+                                                         p_sentencia       => p_sentencia);
+                              EXCEPTION
+                                WHEN OTHERS THEN
+                                  v_plan_origen:=NULL;
+                                  v_monto_origen:= NULL;
+                              END;
+                        END;--- ECOM-1181
+               END IF;
+
+               BEGIN
+
+                  p_sentencia := 'Obtiene el nivel de precios real';
+                  --ECOM-1188
+                  p_obtiene_nivel_real (   P_FECHA_CREACION => FECHA_CREACION,
+                                           P_MONTO_PLAN     => v_monto_origen,
+                                           P_NIVEL_REAL     => v_nivel_real,
+                                           p_sentencia      => p_sentencia);
+                  --ECOM-1188
+
+                  p_sentencia := 'Valida Nivel Real';
+                  IF NIVEL_PRECIO_PEDIDO = V_NIVEL_REAL THEN
+                    v_valida_nivel := 'OK';
+                  ELSE
+                    v_valida_nivel := 'ERROR';
+                  END IF;
+
+               EXCEPTION
+                  WHEN NO_DATA_FOUND THEN
+                    v_nivel_real := 'ERROR';
+               END;
+
+               p_sentencia := 'Verifico cambio desde PP';
+               BEGIN
+
+                     Select /*+ no_cpu_costing*/
+                      Cbh_Cbt_Id, Cbh_End_Date
+                      INTO negocio_anterior, fecha_de_cambio
+                       From (Select Cbh.Cbh_Cbt_Id,
+                                    Cbh.Cbh_End_Date,
+                                    Cbh.Cbh_Start_Date,
+                                    Max(Cbh.Cbh_Start_Date) Over(Partition By Cbh_Clu_Cellular_Number) As Rmax_Cbh_Start_Date
+                               From Cellular_Business_Histories  Cbh
+                              Where Cbh_Clu_Cellular_Number = LINEA
+                                And Cbh.Cbh_End_Date > P_DATE_COMP_PP)
+                      Where Cbh_Start_Date = Rmax_Cbh_Start_Date;
+
+               EXCEPTION
+                  WHEN NO_DATA_FOUND THEN
+                    fecha_de_cambio  := '';
+                    negocio_anterior := 'NO';
+                    hubo_cambio_plan := 'NO';
+               END;
+
+               IF (negocio_anterior = 'PP') THEN
+                  hubo_cambio_plan := 'SI';
+               ELSE
+                  fecha_de_cambio  := '';
+                  hubo_cambio_plan := 'NO';
+               END IF;
+
+               p_sentencia := 'Buscamos info de tarjeta, trackid y banco';
+               IF cod_aprob IS NOT NULL THEN
+                  --ECOM-1188
+
+                  p_sentencia := 'Busco la entidad asociada a la tarjeta';
+                  p_obtiene_datos_tarjeta ( p_coe_id    => entidad_tarjeta,
+                                            p_tarjeta   => v_tarjeta,
+                                            p_sentencia => p_sentencia);
+
+                  p_sentencia := 'Busco el banco asociado a la tarjeta';
+                  p_obtiene_datos_banco (P_PAY_ID         => id_forma_pago,
+                                         P_FECHA_CREACION => fecha_creacion,
+                                         P_BANCO          => v_banco,
+                                         p_sentencia      => p_sentencia);
+
+                  p_sentencia := 'Busco track id asociado a la transaccion';
+
+                  p_obtiene_track_id (P_ECO_ID      => cod_aprob,
+                                      P_TRACK_ID    => v_track_id,
+                                      p_sentencia   => p_sentencia);
+
+                  --ECOM-1188
+               ELSE
+                  v_tarjeta := NULL;
+                  v_banco   := NULL;
+                  v_track_id := null;--ECOM-1188
+               END IF;
+               ---
+               p_sentencia := 'Busco datos de reserva';
+               IF ID_RESERVA IS NOT NULL THEN
+                  v_tipo_venta := 'Retiro en sucursal';
+                  BEGIN
+                    SELECT sao_date        -- ECOM-3393
+                      INTO v_fecha_entrega -- ECOM-3393
+                      FROM tele_status_orders
+                     WHERE sao_chs_id = 181
+                       AND sao_orh_id = id_pedido_stl;
+                  EXCEPTION
+                     WHEN NO_DATA_FOUND THEN
+                        v_fecha_entrega :=NULL; -- ECOM-3393
+                  END;
+               ELSE
+                  BEGIN                         -- ECOM-1192
+                    SELECT toe_reserve_flag
+                      INTO v_domicilio
+                      FROM ws_tele_order_ecom
+                     WHERE toe_orh_id = id_pedido_stl;
+                    ---
+                    IF v_domicilio = 'F' THEN
+                       v_tipo_venta := 'Domicilio de facturacion';
+                    ELSIF v_domicilio = 'A' THEN
+                       v_tipo_venta := 'Domicilio alternativo';
+                    ELSE
+                       v_tipo_venta := 'Domicilio de facturacion';
+                    END IF;
+                    ---
+                  EXCEPTION
+                     WHEN NO_DATA_FOUND THEN
+                        v_tipo_venta := 'Domicilio de facturacion';
+                  END;                            -- FIN ECOM-1192
+               END IF;
+               ---
+               --- Busca version de Tienda origen del pedido        -- PDEC-7709
+               BEGIN
+                 SELECT count(*)
+                   INTO v_cont
+                   FROM stc_order_carts
+                  WHERE oc_order_number = Id_Pedido_Stl;
+                 ---
+                 IF v_cont > 0 THEN
+                    v_origen := 'V9';
+                 ELSE
+                    v_origen := 'V7';
+                 END IF;
+                 ---
+			         EXCEPTION
+                  WHEN OTHERS THEN
+                      v_origen := 'V7';
+               END;                                                 -- fin PDEC-7709
+               ---
+               p_sentencia := 'Armo linea';
+               v_linea := v_linea || 'CATER' || ';' ||
+                                      v_tipo_pedido || ';' ||       -- PDEC-719
+                                      v_producto || ';' ||          -- ECOM-9853
+                                      v_seriado || ';'||            -- ECOM-9853
+                                      v_trafica || ';' ||           -- ECOM-9853
+                                      CUENTA || ';' ||
+                                      LINEA || ';' ||
+                                      NOMBRE_Y_APELLIDO || ';' ||
+                                      TIPO_DOCUMENTO || ';' ||
+                                      DOCUMENTO || ';' ||
+                                      SEXO || ';' ||
+                                      EDAD || ';' ||
+                                      TO_CHAR(FECHA_DE_NACIMIENTO, 'DD/MM/YYYY') || ';' ||
+                                      REGION_ || ';' ||
+                                      NEGOCIO || ';' ||
+                                      ID_PEDIDO_STL || ';' ||
+                                      REMITO_SAP || ';' ||
+                                      ID_TRACKING || ';' ||
+                                      TO_CHAR(FECHA_CREACION, 'DD/MM/YYYY') || ';' ||
+                                      NULL || ';' ||
+                                      v_estado || ';';
+
+
+                v_linea := v_linea || NUMERO_TICKLER_PEDECO || ';' ||
+                                      SKU || ';' ||
+                                      DESCRIPCION_SKU || ';' ||
+                                      MARCA || ';';
+
+                --NIVEL VENTA;  NIVEL REAL;  VALIDACION;  PRECIO LISTA SIN IMP;
+                v_linea := v_linea || NIVEL_PRECIO_PEDIDO || ';' ||
+                                      V_NIVEL_REAL || ';' ||
+                                      v_valida_nivel || ';';
+                v_linea := v_linea || TO_CHAR(PRECIO_LISTA_SIN_IMP,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';';
+
+                --PRECIO LISTA CON IMP;  SUBS3;  SUBS10;  PRECIO FINAL;  TOTAL FINANCIADO;  DIF PL-PO;  FORMA DE PAGO;  CANTIDAD DE CUOTAS;
+                v_linea := v_linea || to_char(PRECIO_LISTA_CON_IMP ,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(SUBS3,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(SUBS10,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(subs1,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(precio_final,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(total_financiado,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      to_char(SUBS10 * -1 ,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''')|| ';' ||
+                                      FORMA_DE_PAGO || ';' ||
+                                      CANTIDAD_DE_CUOTAS || ';' ||
+                                      CANTIDAD_DE_CUOTAS_REALES || ';' ||
+                                      v_tarjeta || ';' ||
+                                      v_banco || ';' ||
+                                      cod_aprob || ';';
+
+                --FLAG CAMBIO DE PLAN; CODIGO DE PLAN ORIGEN; MONTO PLAN ORIGEN; CODIGO DE PLAN DESTINO; MONTO PLAN DESTINO';
+                v_linea := v_linea || v_flag || ';' ||
+                                      v_plan_origen || ';' ||
+                                      to_char( v_monto_origen,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      v_plan_destino || ';' ||
+                                      to_char(v_monto_destino,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                      hubo_cambio_plan || ';' ||
+                                      TO_CHAR(fecha_de_cambio, 'DD/MM/YYYY') || ';' ||
+                                      RIESGO || ';' ||
+                                      TO_CHAR(FECHA_CREACION, 'hh24:mi:ss') || ';' ||
+                                      null || ';';
+
+                --Datos de la reserva
+                --FECHA ENTREGA; HORA ENTREGA; NOMBRE SUCURSAL; TIPO VENTA;
+                v_linea := v_linea || v_track_id || ';' ||
+                                      TO_CHAR(v_fecha_entrega, 'DD/MM/YYYY')|| ';' || -- ECOM-3393
+                                      TO_CHAR(v_fecha_entrega, 'hh24:mi:ss')|| ';' || -- ECOM-3393
+                                      NOMBRE_CAC || ';' ||
+                                      v_tipo_venta || ';';    --- ECOM-2281
+
+
+                --"CATEGORIA CLARO CLUB";"ID PREMIO";"DESCRIP PREMIO";"PUNTOS PREMIO";"COSTO PREMIO";"PREMIO PENDIENTE";"PUNTOS DISPONIBLES";"RECEPTOR ALTERNATIVO";"ORIGEN";"RANGO SCORE";"PUNTOS SCORE";
+                v_linea := v_linea || Category_Cc || ';' || Award_Id || ';'|| Award_Descripcion||';'|| Award_Puntos || ';' ||
+                                  TO_CHAR(Award_Costo,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''')
+                                  ||';'|| Award_Pendiente || ';' || Award_Disponible || ';' || ReceptorAlternativo || ';' || v_origen || ';' || Rango_Score || ';' || Puntos_Score;    -- PDEC-8169
+
+               /* escribe en el archivo*/
+                UTL_FILE.PUT_LINE(P_OUT_FILE, v_linea, TRUE);
+                i := i + 1;
+            END IF;    --- ECOM-6505
+          END; -- SIGO CATER
+
+    END LOOP;
+
+    CLOSE C_CURSOR;
+  EXCEPTION
+    WHEN OTHERS THEN
+      P_ERROR:='PEDIDO: '||Id_Pedido_Stl||' SQLCODE: '||sqlcode||' - Error: '|| SQLERRM;
+  END p_pedidos_cater;
+  ----------------------------------------------------------------------------------------------------
+  PROCEDURE p_pedidos_activaciones( P_VERSION       IN  NUMBER,
+                                    P_HEADER        IN  VARCHAR2,
+                                    P_DATA          IN OUT VARCHAR2,
+                                    p_name_cursor   IN  VARCHAR2,
+                                    P_OUT_FILE      IN OUT  UTL_FILE.FILE_TYPE,
+                                    P_DATE_FROM     IN  DATE,
+                                    P_DATE_UNTIL    IN  DATE,
+                                    P_STATUS        IN  VARCHAR2,
+                                    P_TYPE_ORDER    IN  VARCHAR2,
+                                    P_DEALER        IN  VARCHAR2,
+                                    P_SENTENCIA     OUT VARCHAR2,
+                                    P_ERROR         OUT VARCHAR2) IS
+
+   /*****************************************************************************/
+   /*                     VARIABLES                                             */
+   /*****************************************************************************/
+   -- para precios
+    precio_final      NUMBER;
+    subs3             NUMBER;
+    subs10            NUMBER;
+    subs1             NUMBER;  --ECOM-1188
+    dif_pl_po         NUMBER;  --ECOM-1188
+    impuesto          NUMBER;
+    precio_sin_imp    NUMBER;
+    precio_con_imp    NUMBER;
+    Precio_Obj_Con_Imp NUMBER;  --ECOM-5307
+    Subsidize_Con_imp  NUMBER;  --ECOM-5307
+    Descuento_Con_Imp  NUMBER;  --ECOM-5307
+    Imp_Percent        NUMBER;  --ECOM-5307
+
+    --para ver cambio de T. Neg desde PP
+    hubo_cambio_plan  VARCHAR2(2);
+    fecha_de_cambio   DATE;
+
+    -- para estado y traduccion
+    v_estado          CG_REF_CODES.rv_high_value %TYPE;
+    v_est_max         TELE_STATUS_ORDERS.sao_chs_id %TYPE;
+
+    -- para ver planes y montos
+    v_flag            VARCHAR2(1);
+    v_plan_origen     cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_origen    NUMBER;
+    v_plan_destino    cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_destino   NUMBER;
+
+    -- para niveles de precios
+    v_valida_nivel    VARCHAR2(5);
+    v_nivel_real      VARCHAR2(5);
+
+    -- para pedidos con tarjeta
+    v_tarjeta         collection_entities.coe_name%TYPE;
+    v_banco           t_banks.bnk_name%TYPE;
+    v_track_id        NUMBER;
+
+    --salida
+    B                 NUMBER := 1;
+    v_linea           VARCHAR2(5000) := NULL;
+    c_cursor          sys_refcursor;
+
+    -- PARA CADA FILA
+    ID_PEDIDO_STL               Tele_Order_Headers.orh_id%TYPE;
+    REMITO_SAP                  Tele_Order_Headers.orh_remit%TYPE;
+    ID_TRACKING                 Tele_Order_Headers.ORH_TRACKING_CODE%TYPE;
+    FECHA_CREACION              Tele_Status_Orders.SAO_DATE%TYPE;
+    REGION_                     Market_Codes.mkc_reg_code%TYPE;
+    DESCRIPCION_SKU             Products.pro_description%TYPE;
+    MARCA                       Products.pro_mark%TYPE;
+    NUMERO_TICKLER_PEDECO       Ticklers.Tck_Id%TYPE;
+    SKU                         Tele_Order_Details.ord_srt_pro_id%TYPE;
+    SRF_SPN_SPC_ID              Service_Request_Forms.SRF_SPN_SPC_ID%TYPE;
+    LINEA                       Service_Request_Forms.SRF_CELLULAR_NUMBER%TYPE;
+    CUENTA                      Tele_Order_Headers.orh_acc_id%TYPE;
+    NOMBRE_Y_APELLIDO           VARCHAR2(60);
+    TIPO_DOCUMENTO              Service_Request_Forms.srf_identification_type%TYPE;
+    DOCUMENTO                   Service_Request_Forms.srf_identification_number%TYPE;
+    SEXO                        Service_Request_Forms.srf_sex%TYPE;
+    EDAD                        NUMBER(3);
+    FECHA_DE_NACIMIENTO         Service_Request_Forms.srf_birth_date%TYPE;
+    NEGOCIO                     Service_Request_Forms.SRF_BCO_CBT_ID%TYPE;
+    FECHA_ACTIVACION            Service_Request_Forms.srf_activation_date%TYPE;
+    RIESGO                      Service_Request_Forms.srf_client_risk%TYPE;
+    TOTAL_FINANCIADO            Tele_Order_Payments.orp_ammount%TYPE;
+    CANTIDAD_DE_CUOTAS          Tele_Order_Payments.orp_installments%TYPE;
+    CANTIDAD_DE_CUOTAS_REALES   Payments.pay_real_installments%TYPE;
+    ID_FORMA_PAGO               Tele_Order_Payments.orp_pay_id%TYPE;
+    FORMA_DE_PAGO               Payments.pay_coe_cet_id%TYPE;
+    COD_APROB                   Tele_Order_Payments.orp_authorization_code%TYPE;
+    Entidad_Tarjeta             Tele_Order_Payments.Orp_Coe_Id%TYPE;
+    Transac_Decidir             Tele_Order_Headers.Orh_Eco_Id%TYPE;
+  BEGIN
+      IF p_data = 'N' THEN
+        p_sentencia := 'SE GRABA EL ENCABEZADO DEL ARCHIVO ' ||
+                     p_name_cursor || '...';
+        UTL_FILE.PUT_LINE(P_OUT_FILE, p_header, TRUE);
+        p_data    := 'S';
+      END IF;
+
+  IF P_VERSION=1 THEN
+     p_sentencia:= 'Abrimos el cursor viejo';
+   /*****************************************************************************/
+   /*                     VIEJO CURSOR ACTIVACIONES                             */
+   /*****************************************************************************/
+
+     open C_CURSOR for
+          SELECT orh.orh_id ID_PEDIDO_STL,
+             orh.orh_remit REMITO_SAP,
+             orh.ORH_TRACKING_CODE ID_TRACKING,
+             SAO_DATE AS FECHA_CREACION,
+             mkc.mkc_reg_code REGION_,
+             pro_description DESCRIPCION_SKU,
+             DECODE(pro_mark,'LG',pro_mark,concat(substr(upper(pro_mark), 1, 1),substr(lower(pro_mark), 2))) MARCA,
+             null NUMERO_TICKLER_PEDECO,
+             ord.ord_srt_pro_id SKU,
+             srf.SRF_SPN_SPC_ID,
+             srf.SRF_CELLULAR_NUMBER LINEA,
+             orh.orh_acc_id CUENTA,
+             REPLACE(srf.SRF_CLIENT_FIRST_NAME || ' ' ||srf.SRF_CLIENT_LAST_NAME,';','') NOMBRE_Y_APELLIDO,
+             srf.srf_identification_type TIPO_DOCUMENTO,
+             srf.srf_identification_number DOCUMENTO,
+             srf.srf_sex SEXO,
+             TRUNC(MONTHS_BETWEEN(TO_DATE(TO_CHAR(SYSDATE, 'DD/MM/YYYY'),'DD/MM/YYYY'),srf.srf_birth_date) / 12,0) EDAD,
+             srf.srf_birth_date FECHA_DE_NACIMIENTO,
+             srf.SRF_BCO_CBT_ID NEGOCIO,
+             srf.srf_activation_date FECHA_ACTIVACION,
+             srf.srf_client_risk RIESGO,
+             top.orp_ammount TOTAL_FINANCIADO,
+             top.orp_installments CANTIDAD_DE_CUOTAS,
+             nvl(p.pay_real_installments,top.orp_installments) CANTIDAD_DE_CUOTAS_REALES,
+             top.orp_pay_id ID_FORMA_PAGO,
+             pay_coe_cet_id FORMA_DE_PAGO,
+             top.orp_authorization_code COD_APROB,
+             NULL,
+             NULL
+        FROM tele_order_headers       orh,
+             TELE_STATUS_ORDERS       sao,
+             service_request_forms    srf,
+             tele_order_details       ord,
+             TELE_ORDER_PAYMENTS      TOP,
+             payments                 p,
+             cellulars                clu,
+             block_codes              blc,
+             market_codes             mkc,
+             products                 pro
+       WHERE orh_id = sao_orh_id
+         and srf_orh_id = orh_id
+         and ord_orh_id = orh_id
+         AND clu_cellular_number = srf.srf_cellular_number
+         AND clu.clu_blc_block_code = blc.blc_block_code
+         AND blc.blc_mkc_market_code = mkc.mkc_market_code
+         AND pro_id = ord.ord_srt_pro_id
+         AND TOP.ORP_ORH_ID = ord.ord_orh_id
+         AND p.PAY_ID = top.orp_pay_id
+         AND sao_date > P_DATE_FROM
+         AND sao_date < P_DATE_UNTIL
+         AND sao_chs_id in (177, 519)
+         AND orh_oso_id = 'VT'
+         AND ORH.ORH_ESC_DLR_ID = 'E-COM00000'
+         AND srf.srf_srs_id = 'O'
+         AND srf.srf_srs_pam_id = '110'
+       ORDER BY orh_id ASC;
+
+  ELSE
+     p_sentencia:= 'Abrimos el cursor nuevo';
+   /*****************************************************************************/
+   /*                     NUEVO CURSOR ACTIVACIONES                             */
+   /*****************************************************************************/
+     open C_CURSOR for
+          With tmp1 As
+                (
+                Select /*+ materialize ordered use_nl(Sao,Orh) use_nl(Orh,Ord)  use_nl(Ord,Orp)  use_nl(Ord,Pro)  use_nl(Orp,Pay)
+                       index_desc(Sao,SAO_DATE_IDX) no_nlj_batching(Sao)
+                       index_desc(Orh,orh_pk)       no_nlj_batching(Orh)
+                       index_desc(Ord,ord_orh_fk)   no_nlj_batching(Ord)
+                       index_desc(Pro,pro_pk)       no_nlj_batching(Pro)
+                       index_desc(Orp,orp_orh_fk)   no_nlj_batching(Orp)
+                       index_desc(Pay,pay_pk)       no_nlj_batching(Pay)*/
+                       Orh.Orh_Id,
+                       Orh.Orh_Remit,
+                       Orh.Orh_Tracking_Code,
+                       Orh.Orh_Acc_Id,
+                       Orh.Orh_Eco_Id,
+                       Sao.Sao_Date,
+                       Pro.Pro_Description,
+                       Pro.Pro_Mark,
+                       Ord.Ord_Srt_Pro_Id,
+                       Orp.Orp_Ammount,
+                       Orp.Orp_Installments,
+                       Orp.Orp_Pay_Id,
+                       Orp.Orp_Authorization_Code,
+                       Orp.Orp_Coe_Id,
+                       Pay.Pay_Real_Installments,
+                       Pay.Pay_Coe_Cet_Id
+                  From Tele_Status_Orders    Sao,
+                       Tele_Order_Headers    Orh,
+                       Tele_Order_Details    Ord,
+                       Tele_Order_Payments   Orp,
+                       Payments              Pay,
+                       Products              Pro
+                 Where Orh.Orh_Id = Sao.Sao_Orh_Id
+                   And Ord.Ord_Orh_Id = Orh.Orh_Id
+                   And Pro.Pro_Id = Ord.Ord_Srt_Pro_Id
+                   And Orp.Orp_Orh_Id = Ord.Ord_Orh_Id
+                   And Pay.Pay_Id = Orp.Orp_Pay_Id
+                   And Sao.Sao_Date > P_DATE_FROM
+                   And Sao.Sao_Date < P_DATE_UNTIL
+                   And Instr(P_STATUS, '#' || Sao.Sao_Chs_Id || '#') > 0
+                   And Orh.Orh_Oso_Id = P_TYPE_ORDER
+                   And Orh.Orh_Esc_Dlr_Id = P_DEALER
+                )
+                Select /*+ ordered full(t1) parallel(t1,8) use_nl(t1,srf)
+                       index_desc(srf,SRF_ORH_ID_UN) use_nl(srf,clu)
+                       index(clu,CLU_PK) use_nl(Clu,Blc)
+                       index(Blc,BLC_PK) use_nl(Blc,Mkc)
+                       index(Mkc,MKC_PK)
+                       */
+                       t1.Orh_Id Id_Pedido_Stl,
+                       t1.Orh_Remit Remito_Sap,
+                       t1.Orh_Tracking_Code Id_Tracking,
+                       t1.Sao_Date As Fecha_Creacion,
+                       Mkc.Mkc_Reg_Code Region_,
+                       t1.Pro_Description Descripcion_Sku,
+                       Decode(t1.Pro_Mark,'LG',t1.Pro_Mark,Concat(Substr(Upper(t1.Pro_Mark), 1, 1),Substr(Lower(t1.Pro_Mark), 2))) Marca,
+                       Null Numero_Tickler_Pedeco,
+                       t1.Ord_Srt_Pro_Id Sku,
+                       Srf.Srf_Spn_Spc_Id,
+                       Srf.Srf_Cellular_Number Linea,
+                       t1.Orh_Acc_Id Cuenta,
+                       Replace(Srf.Srf_Client_First_Name || ' ' || Srf.Srf_Client_Last_Name,';','') Nombre_y_Apellido,
+                       Srf.Srf_Identification_Type Tipo_Documento,
+                       Srf.Srf_Identification_Number Documento,
+                       Srf.Srf_Sex Sexo,
+                       Trunc(Months_Between(To_Date(To_Char(Sysdate, 'DD/MM/YYYY'),'DD/MM/YYYY'),Srf.Srf_Birth_Date) / 12,0) Edad,
+                       Srf.Srf_Birth_Date Fecha_De_Nacimiento,
+                       Srf.Srf_Bco_Cbt_Id Negocio,
+                       Srf.Srf_Activation_Date Fecha_Activacion,
+                       Srf.Srf_Client_Risk Riesgo,
+                       t1.Orp_Ammount Total_Financiado,
+                       t1.Orp_Installments Cantidad_De_Cuotas,
+                       Nvl(t1.Pay_Real_Installments, t1.Orp_Installments) Cantidad_De_Cuotas_Reales,
+                       t1.Orp_Pay_Id Id_Forma_Pago,
+                       t1.Pay_Coe_Cet_Id Forma_De_Pago,
+                       t1.Orp_Authorization_Code Cod_Aprob,
+                       t1.Orp_Coe_Id Entidad_Tarjeta,
+                       t1.Orh_Eco_Id Transac_Decidir
+                  From tmp1                  t1,
+                       Service_Request_Forms Srf,
+                       Cellulars             Clu,
+                       Block_Codes           Blc,
+                       Market_Codes          Mkc
+                 Where Srf.Srf_Orh_Id = t1.Orh_Id
+                   And Clu.Clu_Cellular_Number = Srf.Srf_Cellular_Number
+                   And Blc.Blc_Block_Code = Clu.Clu_Blc_Block_Code
+                   And Mkc.Mkc_Market_Code = Blc.Blc_Mkc_Market_Code
+                   And Srf.Srf_Srs_Id = 'O'
+                   And Srf.Srf_Srs_Pam_Id = '110'
+                 Order By t1.Orh_Id Asc;
+  END IF;
+
+  p_sentencia:='Recorremos el cursor';
+
+  LOOP
+      FETCH c_cursor INTO
+          ID_PEDIDO_STL,REMITO_SAP,ID_TRACKING,FECHA_CREACION,REGION_,
+          DESCRIPCION_SKU,MARCA,NUMERO_TICKLER_PEDECO,SKU,SRF_SPN_SPC_ID,
+          LINEA,CUENTA,NOMBRE_Y_APELLIDO,TIPO_DOCUMENTO,DOCUMENTO,
+          SEXO,EDAD,FECHA_DE_NACIMIENTO,NEGOCIO,FECHA_ACTIVACION,
+          RIESGO,TOTAL_FINANCIADO,CANTIDAD_DE_CUOTAS,CANTIDAD_DE_CUOTAS_REALES,ID_FORMA_PAGO,
+          FORMA_DE_PAGO,COD_APROB ,Entidad_Tarjeta,Transac_Decidir;
+      EXIT WHEN c_cursor%NOTFOUND;
+            v_estado        := NULL;
+            v_est_max       := NULL;
+            subs3           := NULL;
+            subs10          := NULL;
+            subs1           := NULL;  --ECOM-1188
+            v_flag          := NULL;
+            v_plan_origen   := NULL;
+            v_monto_origen  := NULL;
+            v_plan_destino  := NULL;
+            v_monto_destino := NULL;
+            v_valida_nivel  := NULL;
+            v_nivel_real    := NULL;
+            impuesto        := NULL;
+            precio_final    := NULL;
+            v_tarjeta       := NULL;
+            v_banco         := NULL;
+            precio_sin_imp  := NULL;
+            precio_con_imp  := NULL;
+            dif_pl_po       := NULL;
+            fecha_de_cambio  := '';   --ECOM-1188
+            hubo_cambio_plan := 'NO'; --ECOM-1188
+
+            v_linea := b || ';';
+
+/***************************************************************************************************
+************************************EL PEDIDO ES DE ACTIVACION**************************************
+***************************************************************************************************/
+
+            p_obtiene_traduccion_estado(  p_id_pedido_stl  => ID_PEDIDO_STL,
+                                          p_est_max        => v_est_max,
+                                          p_estado         => v_estado,
+                                          p_sentencia     => p_sentencia
+                                         );
+
+            /*Cuando el tramite se finaliza se genera la fecha de activacion
+            y se asigna el plan y por ende el tipo de negocio, por eso usamos esa fecha */
+            BEGIN
+                p_sentencia := 'Busco plan con el cual se origina la nueva linea';
+                    SELECT CPL_RPL_ID, 'N'
+                      INTO v_plan_origen, v_flag
+                      FROM cellular_plans
+                     WHERE cpl_clu_cellular_number = LINEA
+                       AND cpl_stg_id = 'AH'
+                       AND trunc(FECHA_ACTIVACION /*ECOM-1188*/) BETWEEN trunc(cpl_add_date) AND
+                           trunc(cpl_end_date)
+                       AND cpl_start_date =
+                           (SELECT MAX(cpl_start_date)
+                              FROM cellular_plans
+                             WHERE cpl_clu_cellular_number = LINEA
+                               AND cpl_stg_id = 'AH'
+                               AND trunc(FECHA_ACTIVACION /*ECOM-1188*/) BETWEEN
+                                   trunc(cpl_add_date) AND trunc(cpl_end_date));
+            EXCEPTION
+               WHEN OTHERS THEN
+                  v_plan_origen:='';
+                  v_flag:='N';
+            END;
+            p_sentencia := 'Obtiene monto del plan origen';
+            p_obtiene_monto_plan ( P_FECHA_CREACION  => FECHA_ACTIVACION /*ECOM-1188*/,
+                                   P_PLAN            => v_plan_origen,
+                                   P_MONTO           => v_monto_origen,
+                                   p_sentencia       => p_sentencia);
+
+            BEGIN
+               SELECT rp.rpl_cbt_id
+                 INTO  NEGOCIO
+                 FROM  rate_plans   rp
+                WHERE rp.rpl_id=v_plan_origen;
+            EXCEPTION
+                WHEN OTHERS THEN
+                     NEGOCIO:='CO';
+            END;
+            ---
+            p_sentencia := 'Obtiene precios de la activación';
+            --- ECOM-5307
+            BEGIN
+               SELECT round(oea_final_amount,2), round(oea_standard_amount,2),
+                      round(oea_subsidize_amount,2), round(oea_special_amount,2),
+                      round(oea_list_amount,2), round(oea_imp_percent,2)
+                 INTO TOTAL_FINANCIADO, Precio_Obj_Con_Imp,
+                      Subsidize_Con_imp, Descuento_Con_Imp,
+                      precio_con_imp, Imp_Percent
+                 FROM Ws_Order_Ecom_Amounts OEA
+                WHERE oea_orh_id = Id_Pedido_Stl
+                  AND oea_pro_id = SKU;
+               ---
+               SUBS1 := ROUND(Subsidize_Con_imp / (1 + Imp_Percent/100) + Descuento_Con_Imp / (1 + Imp_Percent/100),2);
+               precio_con_imp := precio_con_imp - Subsidize_Con_imp;
+               precio_sin_imp := ROUND(precio_con_imp / (1 + Imp_Percent/100),2);
+               precio_final   := Precio_Obj_Con_Imp - Descuento_Con_Imp;
+               dif_pl_po      := precio_con_imp - Precio_Obj_Con_Imp;
+               ---
+            EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                      p_obtiene_precios_activacion  (P_FECHA_CREACION => FECHA_CREACION,
+                                                     P_SKU            => sku,
+                                                     P_NEGOCIO        => NEGOCIO,
+                                                     P_SUBS1          => subs1,
+                                                     P_PL_SIN_IMP     => precio_sin_imp,
+                                                     P_PL_CON_IMP     => precio_con_imp,
+                                                     P_DIF_PL_PO      => dif_pl_po,
+                                                     P_PRECIO_FINAL   => precio_final,
+                                                     p_sentencia      => p_sentencia
+                                                      );
+            END;   --- FIN ECOM-5307
+            ---------------------------------------------------------------------------------------------
+            IF FORMA_DE_PAGO = 'CT' THEN
+                --ECOM-1188
+                p_sentencia := 'Busco la entidad asociada a la tarjeta';
+                p_obtiene_datos_tarjeta ( p_coe_id    => entidad_tarjeta,
+                                          p_tarjeta   => v_tarjeta,
+                                          p_sentencia => p_sentencia);
+
+                p_sentencia := 'Busco el banco asociado a la tarjeta';
+                p_obtiene_datos_banco (P_PAY_ID         => id_forma_pago,
+                                       P_FECHA_CREACION => fecha_creacion,
+                                       P_BANCO          => v_banco,
+                                       p_sentencia      => p_sentencia);
+
+                p_sentencia := 'Obtiene Track Id de Decidir';
+                --Mientras no haya pago online siempre transac_decidir será nulo
+                IF transac_decidir is not null THEN
+                    p_obtiene_track_id (P_ECO_ID    => transac_decidir,
+                                        P_TRACK_ID  => v_track_id,
+                                        p_sentencia => p_sentencia);
+                END IF;
+                --ECOM-1188
+              ELSE
+                v_tarjeta := NULL;
+                v_banco   := NULL;
+                v_track_id:= NULL;--ECOM-1188
+              END IF;
+            ---------------------------------
+              p_sentencia := 'Armo linea';
+              v_linea := v_linea || 'ACTIVACION' || ';' ||
+                                    CUENTA || ';' ||
+                                    LINEA || ';' ||
+                                    NOMBRE_Y_APELLIDO || ';' ||
+                                    TIPO_DOCUMENTO || ';' ||
+                                    DOCUMENTO || ';' ||
+                                    SEXO || ';' ||
+                                    EDAD || ';' ||
+                                    TO_CHAR(FECHA_DE_NACIMIENTO, 'DD/MM/YYYY') || ';' ||
+                                    region_ || ';' ||
+                                    NEGOCIO || ';' ||
+                                    ID_PEDIDO_STL || ';' ||
+                                    REMITO_SAP || ';' ||
+                                    ID_TRACKING || ';' ||
+                                    TO_CHAR(FECHA_CREACION, 'DD/MM/YYYY') || ';' ||
+                                    TO_CHAR(FECHA_ACTIVACION, 'DD/MM/YYYY') || ';' ||
+                                    v_estado || ';';
+
+              v_linea := v_linea || NUMERO_TICKLER_PEDECO || ';' ||
+                                    SKU || ';' ||
+                                    DESCRIPCION_SKU || ';' ||
+                                    MARCA || ';';
+
+              --              NIVEL VENTA;     NIVEL REAL          VALIDACION           PRECIO LISTA SIN IMP;  PRECIO LISTA CON IMP;     SUBS3;         SUBS10           PRECIO FINAL;               TOTAL FINANCIADO;            DIF PL-PO;        FORMA DE PAGO;            CANTIDAD DE CUOTAS;
+              v_linea := v_linea || null || ';' ||
+                                    V_NIVEL_REAL || ';' ||
+                                    null || ';' ||
+                                    to_char(precio_sin_imp,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(precio_con_imp,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs3,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs10,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs1,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(ROUND(precio_final, 2),'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(TOTAL_FINANCIADO,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(dif_pl_po * -1,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    FORMA_DE_PAGO || ';' ||
+                                    CANTIDAD_DE_CUOTAS || ';' ||
+                                    CANTIDAD_DE_CUOTAS_REALES || ';' ||
+                                    v_tarjeta || ';' ||
+                                    v_banco  || ';' ||
+                                    COD_APROB || ';';
+
+              --FLAG CAMBIO DE PLAN ;CODIGO DE PLAN ORIGEN ;   MONTO PLAN ORIGEN;CODIGO DE PLAN DESTINO;MONTO PLAN DESTINO';
+              v_linea := v_linea || v_flag || ';' ||
+                                    v_plan_origen || ';' ||
+                                    to_char(v_monto_origen,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    null || ';' ||
+                                    null || ';' ||
+                                    hubo_cambio_plan || ';' ||
+                                    TO_CHAR(fecha_de_cambio, 'DD/MM/YYYY') || ';' ||
+                                    RIESGO  || ';' ||
+                                    TO_CHAR(FECHA_CREACION, 'hh24:mi:ss') || ';' ||
+                                    TO_CHAR(FECHA_ACTIVACION, 'hh24:mi:ss') || ';' ||
+                                    v_track_id;
+
+
+              /* escribe en el archivo*/
+              UTL_FILE.PUT_LINE(P_OUT_FILE, v_linea, TRUE);
+              b := b + 1;
+
+    END LOOP;
+
+    CLOSE C_CURSOR;
+  EXCEPTION
+    WHEN OTHERS THEN
+      P_ERROR:='PEDIDO: '||Id_Pedido_Stl||' SQLCODE: '||sqlcode||' - Error: '||    SQLERRM;
+  END p_pedidos_activaciones;
+----------------------------------------------------------------------------------------------------
+
+  FUNCTION f_create_mail(p_eFrom      IN VARCHAR2,
+                         p_eTo        IN VARCHAR2,
+                         p_eCC        IN VARCHAR2,
+                         p_eSubject   IN VARCHAR2,
+                         p_pText      IN VARCHAR2,
+                         p_dir        IN VARCHAR2,
+                         p_file       IN VARCHAR2,
+                         p_error_text OUT VARCHAR2) RETURN NUMBER IS
+
+    v_sentencia VARCHAR2(2000);
+    v_rstdo     NUMBER := 0;
+    v_mail_id   NUMBER;
+    v_error     VARCHAR2(2000);
+    v_compresion VARCHAR2(10);
+
+  BEGIN
+
+     v_sentencia := 'Buscando metodo de compresion';
+          SELECT MPR_VALUE
+            INTO v_compresion
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_COMPRESION';
+
+     IF v_compresion ='N' THEN
+         v_compresion:=NULL;
+     END IF;
+
+
+    v_sentencia := 'Llamando a pa_mail_interface.preparemail.';
+    v_rstdo     := pa_mail_interface.preparemail(eFrom    => p_eFrom,
+                                                 eTo      => p_eTo,
+                                                 eCC      => p_eCC,
+                                                 eSubject => p_eSubject,
+                                                 pError   => v_error);
+    IF v_rstdo <> 0 THEN
+      p_error_text := v_sentencia || ' - ' || v_error;
+      RETURN v_rstdo;
+    END IF;
+
+    v_sentencia := 'Llamando a pa_mail_interface.setbody.';
+    v_rstdo     := pa_mail_interface.setbody(pText  => p_pText,
+                                             pError => v_error);
+    IF v_rstdo <> 0 THEN
+      p_error_text := v_sentencia || ' - ' || v_error;
+      RETURN v_rstdo;
+    END IF;
+
+    v_sentencia := 'Llamando a pa_mail_interface.setOSAttach  ';
+    v_rstdo     := pa_mail_interface.setOSAttach(pAttFileName => p_dir || '/' ||
+                                                                 p_file,
+                                                 pType        => v_compresion, -- ECOM-639
+                                                 pError       => v_error);
+    IF v_rstdo <> 0 THEN
+      p_error_text := v_sentencia || ' - ' || v_error;
+      RETURN v_rstdo;
+    END IF;
+
+    v_sentencia := 'Llamando a pa_mail_interface.send.';
+    v_rstdo     := pa_mail_interface.send(pMail_Id => v_mail_id,
+                                          pError   => v_error);
+    IF v_rstdo <> 0 THEN
+      p_error_text := v_sentencia || ' - ' || v_error;
+      RETURN v_rstdo;
+    END IF;
+
+    RETURN 0;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_error_text := 'Error: ' || v_sentencia || ' ' || SQLERRM;
+      RETURN SQLCODE;
+  END f_create_mail;
+-------------------------------------------------------------------------
+--ECOM-1188--
+PROCEDURE p_obtiene_impuesto ( P_FECHA_CREACION IN DATE,
+                               P_SKU            IN PRODUCTS.PRO_ID%TYPE,
+                               P_IMPUESTO       OUT NUMBER,
+                               p_sentencia      OUT VARCHAR2)IS
+
+V_VGR_ID INVOICE_CONCEPTS.INC_VGR_ID%TYPE:=NULL;
+V_VDT_PERCENT VAT_DETAILS.VDT_PERCENT%TYPE:=NULL;
+V_INP_PERCENT IMINT_PRODUCTS.INP_PERCENT%TYPE:=NULL;
+
+BEGIN
+
+  p_sentencia:='SKU '||p_sku||'- Obtenemos el tipo de impuesto';
+
+      SELECT inc_vgr_id
+      INTO V_VGR_ID
+      FROM INVOICE_CONCEPTS
+      WHERE inc_id =(select cha_inc_id
+      from products  ,charge_assignments
+      where pro_id=to_char(P_SKU)
+      and pro_chr_id=cha_chr_id
+      and cha_pay_id = '1'
+      and P_FECHA_CREACION between cha_start_date and cha_end_date);
+
+  --NOTA: notar que aqui no usamos la forma de pago del pedido, usamos directamente la forma de pag'; efectivo
+  --(cha_pay_id=1), ya que eso es lo que realizamos en el calculo de montos en la confirmacion del pedido,
+  --cuando invocamos a la funcion nc_calculate_charge_tax_amount en la regla PA_WS_ORDER_CONFIRMATION. f_calculate_amount_with_tax.
+
+  p_sentencia:='SKU '||p_sku||'- Obtenemos el IVA vigente';
+
+  -- Esta query devuelve el porcentaje de iva correspondiente
+      SELECT vdt_percent
+      INTO V_VDT_PERCENT
+      FROM VAT_DETAILS
+      WHERE vdt_vat_id='CF' AND
+      vdt_vgr_id= V_VGR_ID
+      AND P_FECHA_CREACION BETWEEN TRUNC(vdt_start_date) AND TRUNC(vdt_end_date);
+
+  p_sentencia:='SKU '||p_sku||'- Obtenemos el impuesto INTERNO vigente';
+
+  --Esta query devuelve el porcentaje de impuesto interno correspondiente
+      BEGIN
+        SELECT inp_percent
+        INTO V_INP_PERCENT -- cuando el equipo es importado
+        FROM IMINT_PRODUCTS
+        WHERE inp_vat_id = 'CF' AND
+        inp_vgr_id = V_VGR_ID AND
+        inp_geu_id = 'CF' AND
+        P_FECHA_CREACION BETWEEN inp_start_date AND inp_end_date;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          V_INP_PERCENT:=0;-- cuando el equipo es nacional
+      END;
+
+  p_sentencia:='SKU '||p_sku||'- Calculamos el impuesto a aplicar';
+
+      P_IMPUESTO:= (V_VDT_PERCENT + V_INP_PERCENT)/100+1;
+
+END p_obtiene_impuesto;
+---------------------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_traduccion_estado(  p_id_pedido_stl  IN   TELE_ORDER_HEADERS.orh_id%TYPE,
+                                        p_est_max        OUT  TELE_STATUS_ORDERS.sao_chs_id %TYPE,
+                                        p_estado         OUT  CG_REF_CODES.rv_high_value %TYPE,
+                                        p_sentencia      OUT VARCHAR2
+                                      ) IS
+BEGIN
+      p_sentencia:='Pedido: '||p_id_pedido_stl||' - Buscamos el estado máximo.';
+      ---
+      SELECT TSO.SAO_CHS_ID
+        INTO p_est_max
+        FROM TELE_STATUS_ORDERS     TSO
+       WHERE TSO.SAO_ORH_ID = p_id_pedido_stl
+         AND TSO.SAO_DATE =
+             (SELECT MAX(TSO2.SAO_DATE)
+                FROM TELE_STATUS_ORDERS     TSO2
+               WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID)
+                 AND ROWNUM < 2;-- esta condicion no la entiendo pero la dejo, no deberia haber dos estados con la misma hora maxima
+      ---
+      IF p_est_max <> 180 THEN
+         --- ECOM-4579
+         p_sentencia:='Pedido: '||p_id_pedido_stl||' - Traducimos el estado.';
+         BEGIN
+           SELECT mpr_description
+             INTO p_estado
+             FROM maveric_parameters
+            WHERE mpr_id LIKE ('WS_TRD_%')
+           --- WHERE mpr_id IN ('WS_TRD_PREPARA', 'WS_TRD_ENTREGA', 'WS_TRD_CANCELA', 'WS_TRD_DEVUELTO', 'WS_TRD_RESERVA')
+              AND INSTR(mpr_value,'$'||p_est_max||'$') > 0;
+         EXCEPTION
+             WHEN OTHERS THEN
+                  p_estado := 'SIN INFO';
+         END;
+         --- Fin ECOM-4579
+      ELSE
+         p_sentencia:='Pedido: '||p_id_pedido_stl||' -Buscamos estado del correo';
+         BEGIN
+           SELECT estado.MSG_SHORT
+             INTO p_estado
+             FROM ( SELECT C.RV_HIGH_VALUE AS MSG_SHORT
+                      FROM TELE_ORDER_CLAIMS     T,
+                           CG_REF_CODES        C
+                     WHERE t.ocl_orh_id = p_id_pedido_stl
+                       AND C.RV_DOMAIN = 'WS_TRADUCE2_259'
+                       AND C.RV_MEANING = to_char(T.OCL_ACCION)
+                     ORDER BY T.OCL_DATE DESC) estado
+             WHERE rownum = 1;
+         EXCEPTION
+             WHEN NO_DATA_FOUND THEN
+                  p_estado:='Despachado';-- No hay accion del correo para el pedido
+	     END;
+         ---
+      END IF;
+END p_obtiene_traduccion_estado;
+---------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_nivel_real (   P_FECHA_CREACION IN DATE,
+                                   P_MONTO_PLAN     IN NUMBER,
+                                   P_NIVEL_REAL     OUT VARCHAR2,
+                                   p_sentencia      OUT VARCHAR2) IS
+BEGIN
+
+    BEGIN
+          p_sentencia:='Buscamos el nivel real';
+          select /*+ INDEX_DESC(EPL EPV_PTY_IDX) */ epv_pty_id
+            into P_NIVEL_REAL
+            from esn_price_levels       epl,
+                 esn_parameter_prices   epp,
+                 esn_change_types       ect
+           where epv_pty_id in ('PMB', 'PMO', 'PMX', 'PMY', 'PMM')
+             and epv_epp_id = epp.epp_id
+             AND ect.new_type = 'DIST'
+             AND P_FECHA_CREACION between ect.ect_start_date and nvl(ect.ect_end_date, sysdate + 1)
+             AND ect.ect_id = epp.epp_ect_id
+             AND P_FECHA_CREACION between epp.epp_start_date and nvl(epp.epp_end_date, sysdate + 1)
+             AND ect_id = 1
+             AND epp_tas_id = '611-UN'
+             AND epp_but_id = 'R'
+             AND epp_clt_type = 'CO'
+             AND P_MONTO_PLAN between epp_low_range_rpl and epp_high_range_rpl;
+
+    EXCEPTION
+             WHEN NO_DATA_FOUND THEN
+             -- Si no encuentra un nivel es probable que el plan subio de precio y no se actualizaron los niveles y quedo por fuera, no deberia ocurrir
+               P_NIVEL_REAL:=null;
+    END;
+
+END p_obtiene_nivel_real;
+-------------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_monto_plan (   P_FECHA_CREACION  IN  DATE,
+                                   P_PLAN            IN  cellular_plans.CPL_RPL_ID %TYPE,
+                                   P_MONTO           OUT NUMBER,
+                                   p_sentencia      OUT VARCHAR2
+                               ) IS
+
+BEGIN
+
+    -- Busca el monto del plan el dia que se creo el pedido, por lo que hace las mismas consultas que los snap ,
+    -- pero no se usan los snap por que estos traen solo los vigentes y el precio pudo haber cambiado
+
+    p_sentencia:='Plan: '||p_plan||' - Busca el monto del plan.';
+
+    SELECT /*+ no_cpu_costing*/
+           chp_amount + NVL(monto_pack, 0)
+    INTO  P_MONTO
+    FROM  charge_plans  ,
+          (SELECT pkr_rpl_id,
+          DECODE(tiene_datos, 0, monto_pack + monto_bb, monto_pack) monto_pack
+          FROM
+                (SELECT pkr_rpl_id,
+
+                       SUM(DECODE(INSTR(stl4.stl_char_value, '#' || pkt_changing_type || '#'),
+                                  0,
+                                  pkp_price,
+                                  0)) OVER(PARTITION BY pkr_rpl_id) MONTO_PACK,
+
+                       SUM(DECODE(INSTR(stl4.stl_char_value, '#' || pkt_changing_type || '#'),
+                                  0,
+                                  0,
+                                  pkp_price)) OVER(PARTITION BY pkr_rpl_id) MONTO_BB,
+
+                       SUM(DECODE(INSTR(stl3.stl_char_value, '#' || pkt_pfa_id || '#'),
+                                  0,
+                                  0,
+                                  1)) OVER(PARTITION BY pkr_rpl_id) TIENE_DATOS,
+
+                       row_number() OVER(PARTITION BY pkr_rpl_id ORDER BY pkt_id) num_fila
+                  FROM package_rate_plans  ,
+                       package_prices  ,
+                       packages  ,
+                       stl_parameters   stl1,
+                       stl_parameters   stl2,
+                       stl_parameters   stl3,
+                       stl_parameters   stl4
+                    WHERE pkr_rpl_id = pkp_pkr_rpl_id
+                  AND pkr_pkt_id = pkp_pkr_pkt_id
+                  AND pkr_pkt_id = pkt_id
+                  AND pkr_rpl_id = P_PLAN
+                  AND P_FECHA_CREACION BETWEEN pkr_effective_date AND NVL(pkr_end_date, SYSDATE + 1)
+                  AND P_FECHA_CREACION BETWEEN pkp_start_date AND NVL(pkp_end_date, SYSDATE + 1)
+                  AND P_FECHA_CREACION BETWEEN pkt_start_date AND NVL(pkt_end_date, SYSDATE + 1)
+                  AND stl1.stl_id = 'CATDEF'
+                  AND P_FECHA_CREACION BETWEEN stl1.stl_start_date AND NVL(stl1.stl_end_date, SYSDATE + 1)
+                  AND stl2.stl_id = 'PFACAT'
+                  AND P_FECHA_CREACION BETWEEN stl2.stl_start_date AND NVL(stl2.stl_end_date, SYSDATE + 1)
+                  AND stl3.stl_id = 'CATFMY'
+                  AND P_FECHA_CREACION BETWEEN stl3.stl_start_date AND NVL(stl3.stl_end_date, SYSDATE + 1)
+                  AND stl4.stl_id = 'CBBFMY'
+                  AND P_FECHA_CREACION BETWEEN stl4.stl_start_date AND NVL(stl4.stl_end_date, SYSDATE + 1)
+                  AND INSTR(stl1.stl_char_value, '#' || pkr_default || '#') > 0
+                  AND INSTR(stl2.stl_char_value, '#' || pkt_pfa_id || '#') > 0
+                ) t
+          WHERE t.num_fila = 1)
+    WHERE P_FECHA_CREACION BETWEEN chp_start_date AND NVL(chp_end_date, SYSDATE + 1)
+    AND chp_chr_id = 'CU'
+    AND chp_rpl_id = pkr_rpl_id(+)
+    and chp_rpl_id=P_PLAN;
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      P_MONTO:=NULL;
+END p_obtiene_monto_plan;
+----------------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_precios_activacion  (P_FECHA_CREACION IN DATE,
+                                        /* P_FORMA_PAGO     IN TELE_ORDER_PAYMENTS.orp_pay_id%TYPE,*/
+                                         P_SKU            IN PRODUCTS.PRO_ID%TYPE,
+                                         P_NEGOCIO        IN CELLULARS.CLU_CBT_ID%TYPE,
+                                         P_SUBS1          OUT NUMBER,
+                                         P_PL_SIN_IMP     OUT NUMBER,
+                                         P_PL_CON_IMP     OUT NUMBER,
+                                         P_DIF_PL_PO      OUT NUMBER,
+                                         P_PRECIO_FINAL   OUT NUMBER,
+                                         p_sentencia      OUT VARCHAR2
+                                         ) IS
+/*v_pay_percent       payments.pay_percent%TYPE:=0;*/
+v_impuesto          NUMBER:=0;
+v_subtotal          NUMBER:=0;
+v_nivel             sale_package_details.spd_lev_id%TYPE;
+v_promo             sale_package_details.spd_spc_id%TYPE;
+v_promo_desc        sale_package_details.spd_spc_id%TYPE;
+v_po_con_desc       SALE_PACKAGE_PRICE_HISTORIES.SPH_PRECIO_OBJETIVO%TYPE;
+v_po_sin_imp        SALE_PACKAGE_PRICE_HISTORIES.SPH_PRECIO_OBJETIVO%TYPE;
+BEGIN
+
+/* Buscamos el interes del al forma de pago
+
+    ---
+    BEGIN
+      SELECT pay_percent
+        INTO v_pay_percent
+        FROM payments
+       WHERE pay_id = P_FORMA_PAGO
+         AND P_FECHA_CREACION BETWEEN pay_start_date AND
+             nvl(pay_end_date, SYSDATE + 1);
+     EXCEPTION
+         WHEN OTHERS THEN
+           v_pay_percent:=0;
+     END;
+*/
+    ---
+     p_sentencia:='SKU: '||p_sku||' - Buscamos precio de lista';
+     BEGIN
+      select oc.otc_amount
+        into P_PL_SIN_IMP
+        from other_charges   oc
+       where oc.otc_chr_id =
+             (select p.pro_chr_id from products  p where pro_id = P_SKU)
+         and oc.otc_start_date < P_FECHA_CREACION
+         and OTC_END_DATE > P_FECHA_CREACION;
+     EXCEPTION
+         WHEN OTHERS THEN
+           P_PL_SIN_IMP:=0;
+     END;
+
+     p_sentencia:='SKU: '||p_sku||' - Buscamos precio objetivo en promo.';
+
+     select DECODE(P_NEGOCIO,'CR',4,5),
+            DECODE(P_NEGOCIO,'CR','2018','2017'),
+            DECODE(P_NEGOCIO,'CR','1051','1050')
+       into v_nivel, v_promo, v_promo_desc
+       from dual;
+     ---
+     BEGIN
+      SELECT sph_precio_objetivo
+        INTO v_po_sin_imp
+        FROM sale_package_details ,
+             SALE_PACKAGE_PRICE_HISTORIES ,
+             sale_package_campaigns
+       WHERE spd_id = sph_spd_id
+         AND spd_spc_id = spn_spc_id
+         AND sph_start_date <= P_FECHA_CREACION
+        -- and nvl(spd_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(spd_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+        -- and nvl(spn_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(spn_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+        -- and nvl(sph_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(sph_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+         AND spd_spc_id = v_promo
+         AND spd_lev_id = v_nivel
+         AND spd_pro_id = P_SKU;
+
+     EXCEPTION
+         WHEN OTHERS THEN
+                ---v_po_sin_imp:=0;     --- ECOM-8020
+           BEGIN
+               SELECT sph_precio_objetivo
+                 INTO v_po_sin_imp
+                 FROM sale_package_details ,
+                      sale_package_price_histories ,
+                      sale_package_campaigns
+                WHERE spd_id = sph_spd_id
+                  AND spd_spc_id = spn_spc_id
+                  AND sph_start_date <= P_FECHA_CREACION
+                  AND nvl(spd_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)   
+                  AND nvl(spn_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)    
+                  AND nvl(sph_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)   
+                  AND spd_spc_id = v_promo
+                  AND spd_lev_id = v_nivel
+                  AND spd_pro_id = P_SKU;
+           EXCEPTION
+               WHEN OTHERS THEN
+                    v_po_sin_imp:=0;
+           END;                         --- FIN ECOM-8020    
+     END;
+
+     p_sentencia:='SKU: '||p_sku||' - Busco el precio con descuento en promo.';
+
+     BEGIN
+      SELECT sph_precio_objetivo
+        INTO v_po_con_desc
+        FROM sale_package_details ,
+             sale_package_price_histories ,
+             sale_package_campaigns
+       WHERE spd_id = sph_spd_id
+         AND spd_spc_id = spn_spc_id
+         AND sph_start_date <= P_FECHA_CREACION
+         -- and nvl(spd_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(spd_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+        -- and nvl(spn_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(spn_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+        -- and nvl(sph_end_date, sysdate + 1) > P_FECHA_CREACION
+         AND nvl(sph_end_date - (1/86400), SYSDATE + 1) >= trunc(P_FECHA_CREACION)   --- ECOM-8020
+         AND spd_spc_id = v_promo_desc
+         AND spd_lev_id = v_nivel
+         AND spd_pro_id = P_SKU;
+     EXCEPTION
+         WHEN OTHERS THEN
+              --- v_po_con_desc:=0;  --- ECOM-8020
+           BEGIN
+             SELECT sph_precio_objetivo
+               INTO v_po_con_desc
+               FROM sale_package_details ,
+                    sale_package_price_histories ,
+                    sale_package_campaigns
+              WHERE spd_id = sph_spd_id
+                AND spd_spc_id = spn_spc_id
+                AND sph_start_date <= P_FECHA_CREACION
+                AND nvl(spd_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)    
+                AND nvl(spn_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)    
+                AND nvl(sph_end_date, SYSDATE + 1) >= trunc(P_FECHA_CREACION)    
+                AND spd_spc_id = v_promo_desc
+                AND spd_lev_id = v_nivel
+                AND spd_pro_id = P_SKU;
+           EXCEPTION
+             WHEN OTHERS THEN
+                  v_po_con_desc:=0;
+           END;                       --- FIN ECOM-8020
+     END;
+
+     p_sentencia:='SKU: '||p_sku||' - Calculamos SUBS1';
+
+     select (P_PL_SIN_IMP -
+            DECODE(v_po_con_desc, 0, v_po_sin_imp, v_po_con_desc))
+       into P_SUBS1
+       from dual;
+  
+     p_sentencia:='SKU: '||p_sku||' - Calcula precios con impuestos.';
+  
+     -- Buscamos el impuesto correspondiente al equipo--
+     p_obtiene_impuesto(P_FECHA_CREACION => P_FECHA_CREACION,
+                        P_SKU       => P_SKU,
+                        P_IMPUESTO  => v_impuesto,
+                        p_sentencia => p_sentencia);
+  
+     p_sentencia:='SKU: '||p_sku||' - Calculamos PL con impuesto.';
+     P_PL_CON_IMP := P_PL_SIN_IMP * v_impuesto;
+  
+     p_sentencia:='SKU: '||p_sku||' - Calculamos diferencia entre PL y  PO.';
+     P_DIF_PL_PO := P_PL_SIN_IMP - v_po_sin_imp;
+  
+     p_sentencia:='SKU: '||p_sku||' - Calculamos SUBTOTAL(SUBS1*IMPUESTO).';
+     v_subtotal:=P_SUBS1 * v_impuesto;
+  
+     p_sentencia:='SKU: '||p_sku||' - Calculamos PRECIO_FINAL.';
+     P_PRECIO_FINAL := P_PL_CON_IMP - v_subtotal;
+  
+
+END p_obtiene_precios_activacion;
+-------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_datos_tarjeta (P_COE_ID    IN  collection_entities.coe_id%TYPE,
+                                   P_TARJETA   OUT collection_entities.coe_name%TYPE,
+                                   p_sentencia OUT VARCHAR2) IS
+
+BEGIN
+      BEGIN
+      --------
+      p_sentencia:='Entidad: '||p_coe_id||'- Busco nombre entidad.';
+        SELECT ce.coe_name
+          INTO p_tarjeta
+          FROM collection_entities   ce
+         WHERE ce.coe_id = P_COE_ID
+           and ce.coe_cet_id = 'CT';
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          p_tarjeta := NULL;
+      END;
+
+END p_obtiene_datos_tarjeta;
+
+PROCEDURE p_obtiene_datos_banco (P_PAY_ID         IN  payments_banks.pbk_pay_id%TYPE,
+                                 P_FECHA_CREACION IN  DATE,
+                                 P_BANCO          OUT t_banks.bnk_name%TYPE,
+                                 p_sentencia      OUT VARCHAR2) IS
+BEGIN
+    BEGIN
+      p_sentencia:='Forma depago: '||p_pay_id||'- Busco la info del banco.';
+      SELECT tb.bnk_name
+        INTO p_banco
+        FROM payments_banks            pb,
+             t_banks                   tb
+       WHERE pb.pbk_pay_id = p_pay_id
+         AND pb.pbk_bnk_id = tb.bnk_id
+         AND p_fecha_creacion >= nvl(pb.pbk_start_date,To_date ('01/01/1900 00:00:00', 'DD/MM/YYYY HH24:MI:SS'))
+         AND p_fecha_creacion < nvl(pb.pbk_end_date,To_date ('01/01/2099 00:00:00', 'DD/MM/YYYY HH24:MI:SS'));
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_banco   := NULL;
+    END;
+END p_obtiene_datos_banco;
+-------------------------------------------------------------------------------------------
+PROCEDURE p_obtiene_track_id (P_ECO_ID       IN  tele_order_headers.orh_eco_id%TYPE,
+                              P_TRACK_ID     OUT ecom_card_transactions.eco_track_id%TYPE,
+                              p_sentencia    OUT VARCHAR2) IS
+BEGIN
+    BEGIN
+      p_sentencia:='ECO_ID: '||p_eco_id||' - Busco trackid de transacción.';
+      SELECT eco_track_id
+        INTO p_track_id
+        FROM ecom_card_transactions
+       WHERE eco_id = P_ECO_ID;
+
+    EXCEPTION
+      WHEN NO_DATA_FOUND THEN
+        p_track_id := null;
+    END;
+END;
+--ECOM-1188--
+----------VERSION ORIGINAL---------------
+
+FUNCTION f_genera_csv_ecommerce_orig    (p_id_cursor   IN NUMBER,
+                                         p_slc_reporte IN NUMBER,
+                                         p_error_text  OUT VARCHAR2)
+   --P_ID_CURSOR es el valor analizado para determinar que reporte debe armar
+   RETURN NUMBER IS
+    v_destinatarios  VARCHAR2(500);
+    v_from           VARCHAR2(100);
+    v_text           VARCHAR2(2000);
+    v_dir            VARCHAR2(100);
+    v_dir_path       VARCHAR2(100);
+    v_nom_cur        VARCHAR2(1000);
+    v_subject        VARCHAR2(100);
+    v_fecha          DATE;
+    v_result         NUMBER;
+    v_dest_ccc       VARCHAR2(32000);
+    v_datos          VARCHAR2(10) := 'S'; -- ESTA VARIABLE ES PARA DETERMINAR SI HAY DATOS
+
+    OUT_FILE         UTL_FILE.FILE_TYPE;
+    file_name        VARCHAR2(70);
+    e_error          EXCEPTION;
+    v_sentencia      VARCHAR2(100) := '';
+
+    v_fecha_nuevo_iva_imp date:=to_date('11/12/2017 07:00:00','dd/mm/yyyy hh24:mi:ss');--mimi
+    /*****************************************************************************/
+    CURSOR c_pedidos_ecom(p_fecha_desde date, p_fecha_hasta date) IS
+
+      SELECT 'CATER' OPERACION,
+             orh1.orh_cellular_number LINEA,
+             orh1.orh_acc_id CUENTA,
+             REPLACE(CONCAT(CONCAT(orh1.orh_client_first_name, ' '),orh1.orh_client_last_name),';','') AS NOMBRE_Y_APELLIDO,
+             orh1.orh_document_type TIPO_DOCUMENTO,
+             orh1.orh_document_number DOCUMENTO,
+             clt.clt_sex SEXO,
+             TRUNC(MONTHS_BETWEEN(TO_DATE(TO_CHAR(SYSDATE, 'DD/MM/YYYY'),'DD/MM/YYYY'),clt.clt_birth_date) / 12,0) EDAD,
+             clt.clt_birth_date FECHA_DE_NACIMIENTO,
+             mkc.mkc_reg_code REGION_,
+             orh1.ORH_BCO_CBT_ID NEGOCIO,
+             orh1.orh_id ID_PEDIDO_STL,
+             orh1.orh_remit REMITO_SAP,
+             orh1.ORH_TRACKING_CODE ID_TRACKING,
+             sao.sao_date FECHA_CREACION,
+             null NUMERO_TICKLER_PEDECO,
+             oac.oac_pro_id SKU,
+             pro_description DESCRIPCION_SKU,
+             DECODE(pro_mark,'LG', pro_mark,concat(substr(upper(pro_mark), 1, 1),substr(lower(pro_mark), 2))) MARCA,
+             OAC.oac_pty_id AS NIVEL_PRECIO_PEDIDO,
+             OAC.Oac_List_Ammount AS PRECIO_LISTA_SIN_IMP,
+             ABS((nvl(OAC.Oac_Special_Ammount, 0))) SUBS3,
+             ABS((nvl(OAC.Oac_Subsidize_Ammount, 0))) SUBS10,
+             OAC.Oac_Subsidize_Ammount AS DIF_PL_PO,
+             OAC.Oac_Coe_Cet_Id AS FORMA_DE_PAGO,
+             OAC.Oac_pay_id AS ID_FORMA_PAGO,
+             OAC.Oac_Pay_Installments AS CANTIDAD_DE_CUOTAS,
+             nvl(pay.pay_real_installments,OAC.Oac_Pay_Installments) AS CANTIDAD_DE_CUOTAS_REALES,
+             OAC.oac_pay_percent AS PERCENT_,
+             clt.clt_rsk_id RIESGO,
+             orh1.orh_eco_id COD_APROB,
+             -----
+             orh1.orh_pre_id ID_RESERVA,
+             toe.toe_cac_name NOMBRE_CAC
+             -----
+        FROM tele_order_headers      orh1,
+             TELE_STATUS_ORDERS      SAO,
+             tele_order_accesories   OAC,
+             client                  clt,
+             accounts                acc,
+             cellulars               clu,
+             block_codes             blc,
+             market_codes            mkc,
+             products                pro,
+             payments                pay,
+             ws_tele_order_ecom      toe
+       WHERE orh1.orh_id = sao.sao_orh_id
+         AND oac.oac_orh_id = orh1.orh_id
+         AND clu.clu_acc_id = acc.acc_id
+         AND acc.acc_clt_id = clt.clt_id
+         AND clu.clu_blc_block_code = blc.blc_block_code
+         AND blc.blc_mkc_market_code = mkc.mkc_market_code
+         AND clu_cellular_number = orh1.Orh_Cellular_Number
+         AND pro.pro_id = oac.oac_pro_id
+         AND oac.oac_pay_id = pay.pay_id
+         AND toe.toe_orh_id = orh1.orh_id
+         AND sao_date > p_fecha_desde
+         AND sao_date < p_fecha_hasta
+         AND sao_chs_id in (177, 519)
+         AND orh_oso_id = 'E1'
+         AND oac_rsn_id = 'VENTER'
+       ORDER BY orh_id ASC;
+
+    CURSOR c_pedidos_ecom2(p_fecha_desde date, p_fecha_hasta date) IS
+
+       SELECT orh.orh_id ID_PEDIDO_STL,
+         orh.orh_remit REMITO_SAP,
+         orh.ORH_TRACKING_CODE ID_TRACKING,
+         SAO_DATE AS FECHA_CREACION,
+         mkc.mkc_reg_code REGION_,
+         pro_description DESCRIPCION_SKU,
+         DECODE(pro_mark,'LG',pro_mark,concat(substr(upper(pro_mark), 1, 1),substr(lower(pro_mark), 2))) MARCA,
+         null NUMERO_TICKLER_PEDECO,
+         ord.ord_srt_pro_id SKU,
+         srf.SRF_SPN_SPC_ID,
+         srf.SRF_CELLULAR_NUMBER LINEA,
+         orh.orh_acc_id CUENTA,
+         REPLACE(srf.SRF_CLIENT_FIRST_NAME || ' ' ||srf.SRF_CLIENT_LAST_NAME,';','') NOMBRE_Y_APELLIDO,
+         srf.srf_identification_type TIPO_DOCUMENTO,
+         srf.srf_identification_number DOCUMENTO,
+         srf.srf_sex SEXO,
+         TRUNC(MONTHS_BETWEEN(TO_DATE(TO_CHAR(SYSDATE, 'DD/MM/YYYY'),'DD/MM/YYYY'),srf.srf_birth_date) / 12,0) EDAD,
+         srf.srf_birth_date FECHA_DE_NACIMIENTO,
+         srf.SRF_BCO_CBT_ID NEGOCIO,
+         srf.srf_activation_date FECHA_ACTIVACION,
+         srf.srf_client_risk RIESGO,
+         top.orp_ammount TOTAL_FINANCIADO,
+         top.orp_installments CANTIDAD_DE_CUOTAS,
+         nvl(p.pay_real_installments,top.orp_installments) CANTIDAD_DE_CUOTAS_REALES,
+         top.orp_pay_id ID_FORMA_PAGO,
+         pay_coe_cet_id FORMA_DE_PAGO,
+         top.orp_authorization_code COD_APROB
+    FROM tele_order_headers      orh,
+         TELE_STATUS_ORDERS      sao,
+         service_request_forms   srf,
+         tele_order_details      ord,
+         TELE_ORDER_PAYMENTS     TOP,
+         payments                p,
+         cellulars               clu,
+         block_codes             blc,
+         market_codes            mkc,
+         products                pro
+   WHERE orh_id = sao_orh_id
+     and srf_orh_id = orh_id
+     and ord_orh_id = orh_id
+     AND clu_cellular_number = srf.srf_cellular_number
+     AND clu.clu_blc_block_code = blc.blc_block_code
+     AND blc.blc_mkc_market_code = mkc.mkc_market_code
+     AND pro_id = ord.ord_srt_pro_id
+     AND TOP.ORP_ORH_ID = ord.ord_orh_id
+     AND p.PAY_ID = top.orp_pay_id
+     AND sao_date > p_fecha_desde
+     AND sao_date < p_fecha_hasta
+     AND sao_chs_id in (177, 519)
+     AND orh_oso_id = 'VT'
+     AND ORH.ORH_ESC_DLR_ID = 'E-COM00000'
+     AND srf.srf_srs_id = 'O'
+     AND srf.srf_srs_pam_id = '110'
+   ORDER BY orh_id ASC;
+
+    precio_final      NUMBER;
+    subs3             NUMBER;
+    subs10            NUMBER;
+    subsTotal         NUMBER;
+    total_financiado  NUMBER;
+    precio_lista      NUMBER;
+    precio_sin_imp    NUMBER;
+    precio_con_imp    NUMBER;
+    impuesto          NUMBER;
+    hubo_cambio_plan  VARCHAR2(2);
+    fecha_comparacion DATE := SYSDATE - 210;
+    fecha_de_cambio   DATE;
+
+    negocio_anterior VARCHAR2(2);
+
+    v_estado          CG_REF_CODES.rv_high_value %TYPE;
+    v_est_max         TELE_STATUS_ORDERS.sao_chs_id %TYPE;
+    v_flag            VARCHAR2(1);
+    v_plan_origen     cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_origen    NUMBER;
+    v_plan_destino    cellular_plans.CPL_RPL_ID %TYPE;
+    v_monto_destino   NUMBER;
+    v_valida_nivel    VARCHAR2(5);
+    v_nivel_real      VARCHAR2(5);
+    v_oferta_tienda   SALE_PACKAGE_PRICE_HISTORIES.sph_precio_objetivo %TYPE; --number(12.2)
+    v_oferta_estandar SALE_PACKAGE_PRICE_HISTORIES.sph_precio_objetivo %TYPE;
+    v_tarjeta         collection_entities.coe_name%TYPE;
+    v_banco           t_banks.bnk_name%TYPE;
+    v_linea           VARCHAR2(5000) := NULL;
+    v_fecha_entrega   DATE;
+    v_hora_entrega    VARCHAR2(10);
+    v_track_id        NUMBER;
+    v_tipo_venta      VARCHAR2(50);
+    I                 NUMBER := 1;
+    B                 NUMBER := 1;
+
+    v_fecha_desde DATE;
+    v_fecha_hasta DATE;
+
+    /*****************************************************************************/
+
+  BEGIN
+    v_datos := 'N';
+
+    CASE P_ID_CURSOR
+      WHEN 1 THEN
+
+        BEGIN
+          v_sentencia := 'Buscando WS_MAIL_TO...';
+          SELECT MPR_VALUE
+            INTO v_destinatarios
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_MAIL_TO';
+
+          v_sentencia := 'Buscando WS_DIR_REPORTE...';
+          SELECT MPR_VALUE
+            INTO v_dir
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_DIR_REPORTE';
+
+          v_sentencia := 'Buscando WS_MAIL_FROM...';
+          SELECT MPR_VALUE
+            INTO v_from
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_MAIL_FROM';
+           ----
+          v_sentencia := 'Buscando WS_PRIC_LVL_DAT...';
+          SELECT to_date(MPR_VALUE,'DD/MM/YYYY')
+            INTO v_fecha
+            FROM MAVERIC_PARAMETERS
+           WHERE MPR_ID = 'WS_PRIC_LVL_DAT';
+
+          v_sentencia := 'Obteniendo path real para WS_DIR_REPORTE';
+          SELECT directory_path
+            INTO v_dir_path
+            FROM dba_directories
+           WHERE upper(directory_name) =
+                 (SELECT mpr_value
+                    FROM maveric_parameters
+                   WHERE mpr_id = 'WS_DIR_REPORTE');
+
+          --Se selecciona el periodo en el que se toman los datos
+          IF P_SLC_REPORTE = 1 THEN
+            SELECT last_day(add_months(trunc(sysdate), -1)) + 1,
+                   last_day(trunc(sysdate)) + 1
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT1...';
+            SELECT MPR_VALUE
+              INTO v_text
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_TEXT1';
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ1...';
+            SELECT MPR_VALUE
+              INTO v_nom_cur
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_SUBJ1';
+
+            v_subject := v_nom_cur;
+          END IF;
+
+          IF P_SLC_REPORTE = 2 THEN
+            SELECT last_day(add_months(trunc(sysdate), -2)) + 1,
+                   last_day(add_months(trunc(sysdate), -1)) + 1
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT2...';
+            SELECT MPR_VALUE
+              INTO v_text
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_TEXT2';
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ2...';
+            SELECT MPR_VALUE
+              INTO v_nom_cur
+              FROM MAVERIC_PARAMETERS
+             WHERE MPR_ID = 'WS_MAIL_SUBJ2';
+
+            v_subject := v_nom_cur;
+          END IF;
+
+          IF P_SLC_REPORTE = 3 THEN
+            SELECT TRUNC(SYSDATE),
+                   trunc(sysdate+1)
+              INTO v_fecha_desde, v_fecha_hasta
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_TEXT3...';
+            SELECT 'Reporte del dia'
+              INTO v_text
+              FROM dual;
+
+            v_sentencia := 'Buscando WS_MAIL_SUBJ3...';
+            SELECT 'Reporte_dia_actual'
+              INTO v_nom_cur
+              FROM dual;
+
+            v_subject := v_nom_cur;
+          END IF;
+
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            p_error_text := 'No se encontro el parametro, ' || v_sentencia;
+            RETURN 1;
+          WHEN OTHERS THEN
+            p_error_text := 'Error ' || SQLCODE || ' ' || SQLERRM;
+            RETURN 1;
+        END;
+
+        v_sentencia := 'CREANDO ARCHIVO ' || v_nom_cur || '...';
+        file_name   := v_nom_cur || to_char(SYSDATE,'yyyymmddhhmiss') || '.csv';
+        OUT_FILE    := UTL_FILE.FOPEN(v_dir, file_name, 'W');
+        ----------------------------
+
+        --dbms_session.set_nls('nls_date_format', '''yyyy-mm-dd''');
+        v_linea := '"ORDEN";"OPERACION";"CUENTA";"LINEA";"NOMBRE Y APELLIDO";"TIPO DOCUMENTO";"DOCUMENTO";"SEXO";"EDAD";"FECHA DE NACIMIENTO";"REGION";"NEGOCIO";"ID PEDIDO STL";"REMITO SAP";"ID TRACKING";"FECHA CREACIÿN";"FECHA DE ACTIVACIÿN";"ESTADO";"N° TICKLER PEDECO";"SKU";" DESCRIPCION SKU";"MARCA";"NIVEL PRECIO PEDIDO";"NIVEL PRECIO REAL";"VALIDACION NIVEL PRECIO";"PRECIO LISTA SIN IMP";" PRECIO LISTA CON IMP";"SUBS3";"SUBS10";" PRECIO FINAL";"TOTAL FINANCIADO";" DIF PL-PO";" FORMA DE PAGO";"CANTIDAD DE CUOTAS";"CANTIDAD DE CUOTAS REAL";"TARJETA";"BANCO";"CODIGO APROBACION";"FLAG CAMBIO DE PLAN ";"CÿDIGO DE PLAN ORIGEN ";"MONTO PLAN ORIGEN";"CÿDIGO DE PLAN DESTINO";"MONTO PLAN DESTINO";"¿CAMBIO DE TIPO DE NEGOCIO DESDE PP?";"FECHA DE CAMBIO DE TIPO DE NEGOCIO";"RIESGO";"FECHA CREACION";"FECHA ACTIVACION";"TRACK ID";"FECHA ENTREGA";"HORA ENTREGA";"NOMBRE SUCURSAL";"TIPO VENTA"';
+
+        FOR a IN c_pedidos_ecom(v_fecha_desde, v_fecha_hasta) LOOP
+          IF v_datos = 'N' THEN
+            v_sentencia := 'SE GRABA EL ENCABEZADO DEL ARCHIVO ' ||
+                           v_nom_cur || '...';
+            UTL_FILE.PUT_LINE(OUT_FILE, v_linea, TRUE);
+            v_dest_ccc := '';
+            v_datos    := 'S';
+          END IF;
+
+          v_estado         := NULL;
+          v_est_max        := NULL;
+          v_flag           := NULL;
+          precio_final     := NULL;
+          total_financiado := NULL;
+          v_plan_origen    := NULL;
+          v_monto_origen   := NULL;
+          v_plan_destino   := NULL;
+          v_monto_destino  := NULL;
+          v_valida_nivel   := NULL;
+          v_nivel_real     := NULL;
+          v_banco          := NULL;
+          v_tarjeta        := NULL;
+          v_tipo_venta     := NULL;
+          v_fecha_entrega  := '';
+          v_hora_entrega   := '';
+          v_track_id       := NULL;
+          v_linea := i || ';';
+
+          BEGIN
+/***************************************************************************************************
+***************************************EL PEDIDO ES DE CATER****************************************
+***************************************************************************************************/
+
+            SELECT TSO.SAO_CHS_ID
+              INTO v_est_max
+              FROM TELE_STATUS_ORDERS   TSO
+             WHERE TSO.SAO_ORH_ID = a.ID_PEDIDO_STL
+               AND TSO.SAO_DATE =
+                   (SELECT MAX(TSO2.SAO_DATE)
+                      FROM TELE_STATUS_ORDERS   TSO2
+                     WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID)
+               AND ROWNUM < 2;
+
+            IF v_est_max in (177, 178, 179, 181, 183, 184, 188, 256) THEN
+              SELECT (CASE
+                       WHEN v_est_max IN (177, 178, 179, 184, 188) THEN
+                        'En preparación'
+                       WHEN v_est_max IN (181) THEN
+                        'Ya tenés tu pedido!'
+                       WHEN v_est_max IN (183) THEN
+                        'Cancelado'
+                       WHEN v_est_max IN (256) THEN
+                        'Devuelto'
+                       ELSE
+                        'SIN INFO'
+                     END)
+                INTO v_estado
+                FROM dual;
+            ELSE
+              -- Buscamos el Estado Traducido--
+              BEGIN
+                SELECT estado.MSG_SHORT
+                  INTO v_estado
+                  FROM (SELECT TSO.SAO_CHS_ID AS SAO_CHS_ID,
+                               TSO.SAO_ORH_ID AS SAO_ORH_ID,
+                               (SELECT DISTINCT TSO2.SAO_DATE
+                                  FROM TELE_STATUS_ORDERS   TSO2
+
+                                 WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID
+                                   AND TO_CHAR(TSO2.SAO_CHS_ID) =
+                                       C.RV_ABBREVIATION) AS SAO_DATE,
+                               C.RV_LOW_VALUE AS MSG_LONG,
+                               C.RV_HIGH_VALUE AS MSG_SHORT
+                          FROM TELE_STATUS_ORDERS   TSO,
+                               CG_REF_CODES       C
+
+                         WHERE TSO.SAO_ORH_ID = a.ID_PEDIDO_STL
+                           AND C.RV_DOMAIN = 'WS_TRADUCE2_259'
+                           AND C.RV_MEANING = TO_CHAR(TSO.SAO_CHS_ID)
+                           AND TSO.SAO_DATE =
+                               (SELECT MAX(TSO2.SAO_DATE)
+                                  FROM TELE_STATUS_ORDERS   TSO2,
+                                       CG_REF_CODES       C3
+
+
+                                 WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID
+                                   AND TO_CHAR(TSO2.SAO_CHS_ID) =
+                                       C3.RV_MEANING
+                                   AND C3.RV_DOMAIN = 'WS_TRADUCE2_259'
+                                   AND C3.RV_DEFAULT = C.RV_DEFAULT)
+                        UNION ALL
+                        SELECT T.OCL_ACCION     AS SAO_CHS_ID,
+                               T.OCL_ORH_ID     AS SAO_ORH_ID,
+                               T.OCL_DATE       AS SAO_DATE,
+                               C2.RV_LOW_VALUE  AS MSG_LONG,
+                               C2.RV_HIGH_VALUE AS MSG_SHORT
+                          FROM TELE_ORDER_CLAIMS   T,
+                               CG_REF_CODES      C2
+
+
+                         WHERE t.ocl_orh_id = a.ID_PEDIDO_STL
+                           AND C2.RV_DOMAIN = 'WS_TRADUCE2_259'
+                           AND C2.RV_MEANING = to_char(T.OCL_ACCION)
+                         ORDER BY SAO_DATE DESC) estado
+                 WHERE rownum = 1;
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  v_estado := 'SIN INFO';
+              END; -- Estado
+
+            END IF;
+
+            -- Buscamos el impuesto correspondiente al equipo--
+            --MIMI
+            IF a.Fecha_Creacion <=v_fecha_nuevo_iva_imp THEN
+              begin
+              SELECT decode(ic.inc_vgr_id,
+                            'J',
+                            1.21,
+                            'P',
+                            1.4148,
+                            'R',
+                            1.105)
+                INTO impuesto
+                FROM products             p,
+
+                     charge_assignments c,
+                     invoice_concepts   ic
+
+               WHERE p.pro_chr_id = c.cha_chr_id
+                 AND c.cha_inc_id = ic.inc_id
+                 AND pro_id = a.SKU
+                 AND cha_pay_id = a.ID_FORMA_PAGO;
+
+            exception
+              when no_data_found then
+                SELECT decode(ic.inc_vgr_id,
+                              'J',
+                              1.21,
+                              'P',
+                              1.4148,
+                              'R',
+                              1.105)
+                  INTO impuesto
+                  FROM products             p,
+                       charge_assignments   c,
+                       invoice_concepts     ic
+
+
+
+                 WHERE p.pro_chr_id = c.cha_chr_id
+                   AND c.cha_inc_id = ic.inc_id
+                   AND pro_id = a.SKU
+                   and rownum < 2;
+            end;
+            ELSE
+              begin
+              SELECT decode(ic.inc_vgr_id,
+                            'J',
+                            1.21,
+                            'P',
+                            1.3273,
+                            'R',
+                            1.105)
+                INTO impuesto
+                FROM products             p,
+                     charge_assignments   c,
+                     invoice_concepts     ic
+
+
+
+               WHERE p.pro_chr_id = c.cha_chr_id
+                 AND c.cha_inc_id = ic.inc_id
+                 AND pro_id = a.SKU
+                 AND cha_pay_id = a.ID_FORMA_PAGO;
+
+            exception
+              when no_data_found then
+                SELECT decode(ic.inc_vgr_id,
+                              'J',
+                              1.21,
+                              'P',
+                              1.3273,
+                              'R',
+                              1.105)
+                  INTO impuesto
+                  FROM products             p,
+                       charge_assignments c,
+                       invoice_concepts   ic
+
+
+
+                 WHERE p.pro_chr_id = c.cha_chr_id
+                   AND c.cha_inc_id = ic.inc_id
+                   AND pro_id = a.SKU
+                   and rownum < 2;
+            end;
+            END IF;
+            --MIMI
+            -- Calculamos montos precios e impuestos al equipo--
+
+            SELECT ROUND((a.PRECIO_LISTA_SIN_IMP - ABS(nvl(a.SUBS10, 0)) -
+                         ABS(nvl(a.SUBS3, 0))) * impuesto,
+                         2)
+              INTO precio_final
+              FROM dual;
+
+            SELECT precio_final *
+                   decode((decode(a.PERCENT_, 0.00, 100, a.PERCENT_) / 100),
+                          1,
+                          1,
+                          (decode(a.PERCENT_, 0.00, 100, a.PERCENT_) / 100) + 1)
+              INTO total_financiado
+              FROM dual;
+
+            BEGIN
+              -- plan
+
+              -- Busco si hubo cambio de plan el dia que se confirmo el pedido
+              SELECT CellP.CPL_RPL_ID, 'S'
+                INTO v_plan_destino, v_flag
+                FROM cellular_plans   CellP
+               WHERE CellP.CPL_CLU_CELLULAR_NUMBER = a.LINEA
+                 AND CellP.CPL_STG_ID = 'AH'
+                 AND CellP.Cpl_Usr_Id = 'WS_ECOM'
+                 AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                     trunc(a.FECHA_CREACION)
+                 AND CellP.Cpl_Start_Date =
+                     (SELECT MAX(CellP.Cpl_Start_Date)
+                        FROM cellular_plans   CellP
+                       WHERE CellP.CPL_CLU_CELLULAR_NUMBER = a.LINEA
+                         AND CellP.CPL_STG_ID = 'AH'
+                         AND CellP.Cpl_Usr_Id = 'WS_ECOM'
+                         AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                             trunc(a.FECHA_CREACION));
+
+              -- Si hubo cambio de plan, busco el plan origen
+              SELECT CellP.CPL_RPL_ID
+                INTO v_plan_origen
+                FROM cellular_plans   CellP
+               WHERE CellP.CPL_CLU_CELLULAR_NUMBER = a.LINEA
+                 AND CellP.CPL_STG_ID = 'AH'
+                 AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                     trunc(a.FECHA_CREACION)
+                 AND CellP.Cpl_Start_Date =
+                     (SELECT MIN(CellP.Cpl_Start_Date)
+                        FROM cellular_plans   CellP
+                       WHERE CellP.CPL_CLU_CELLULAR_NUMBER = a.LINEA
+                         AND CellP.CPL_STG_ID = 'AH'
+                         AND TRUNC(CellP.CPL_LAST_UPDATED_DATE) =
+                             trunc(a.FECHA_CREACION));
+
+              -- Calculo monto planes
+
+              SELECT SUM(monto_total)
+                INTO v_monto_origen
+                FROM v_suma_plan_packs
+               WHERE chp_rpl_id = v_plan_origen;
+
+              SELECT SUM(monto_total)
+                INTO v_monto_destino
+                FROM v_suma_plan_packs
+               WHERE chp_rpl_id = v_plan_destino;
+
+            EXCEPTION
+              WHEN NO_DATA_FOUND THEN
+                BEGIN
+                -- Si no tuvo cambio de plan, busco el plan del cliente al momento de realizar la compra
+                SELECT CPL_RPL_ID, 'N'
+                  INTO v_plan_origen, v_flag
+                  FROM cellular_plans
+
+                 WHERE cpl_clu_cellular_number = a.LINEA
+                   AND cpl_stg_id = 'AH'
+                   AND trunc(a.FECHA_CREACION) BETWEEN trunc(cpl_add_date) AND
+                       trunc(cpl_end_date)
+                   AND cpl_start_date =
+                       (SELECT MAX(cpl_start_date)
+                          FROM cellular_plans
+
+                         WHERE cpl_clu_cellular_number = a.LINEA
+                           AND cpl_stg_id = 'AH'
+                           AND trunc(a.FECHA_CREACION) BETWEEN
+                               trunc(cpl_add_date) AND trunc(cpl_end_date));
+
+                SELECT SUM(monto_total)
+                  INTO v_monto_origen
+                  FROM v_suma_plan_packs
+                 WHERE chp_rpl_id = v_plan_origen;
+
+               EXCEPTION
+              WHEN NO_DATA_FOUND THEN
+                 SELECT CPL_RPL_ID, 'N'
+                  INTO v_plan_origen, v_flag
+                  FROM cellular_plans
+                 WHERE cpl_clu_cellular_number = a.LINEA
+                   AND cpl_stg_id = 'AH'
+                    AND trunc(sysdate) BETWEEN trunc(cpl_add_date) AND
+                       trunc(cpl_end_date);
+             END;
+            END; -- BUSQUEDA DE DATOS DE PLAN
+
+            BEGIN
+              IF a.FECHA_CREACION >= v_fecha THEN
+
+                IF v_flag = 'N' THEN
+                  SELECT rv_meaning
+                    INTO v_nivel_real
+                    FROM cg_ref_codes
+
+                   WHERE rv_domain = 'WS_PRICE_LVL_NEW'
+                     AND rv_default = 'N'
+                     AND to_char(v_monto_origen) BETWEEN rv_low_value AND
+                         rv_high_value;
+
+                ELSIF v_flag = 'S' THEN
+                  SELECT rv_meaning
+                    INTO v_nivel_real
+                    FROM cg_ref_codes
+
+                   WHERE rv_domain = 'WS_PRICE_LVL_NEW'
+                     AND rv_default = 'S'
+                     AND to_char(v_monto_origen) BETWEEN rv_low_value AND
+                         rv_high_value;
+
+                END IF;
+              ELSE
+                IF v_flag = 'N' THEN
+                  SELECT rv_meaning
+                    INTO v_nivel_real
+                    FROM cg_ref_codes
+
+                   WHERE rv_domain = 'WS_PRICE_LVL_OLD'
+                     AND rv_default = 'N'
+                     AND to_char(v_monto_origen) BETWEEN rv_low_value AND
+                         rv_high_value;
+
+                ELSIF v_flag = 'S' THEN
+                  SELECT rv_meaning
+                    INTO v_nivel_real
+                    FROM cg_ref_codes
+
+                   WHERE rv_domain = 'WS_PRICE_LVL_OLD'
+                     AND rv_default = 'S'
+                     AND to_char(v_monto_origen) BETWEEN rv_low_value AND
+                         rv_high_value;
+
+                END IF;
+              END IF;
+
+              IF a.NIVEL_PRECIO_PEDIDO = V_NIVEL_REAL THEN
+                v_valida_nivel := 'OK';
+              ELSE
+                v_valida_nivel := 'ERROR';
+              END IF;
+
+              --VERIFICO EL PENULTIMO PLAN SI ES PP HUBO CAMBIO DE PP A OTRO NEGOCIO
+              BEGIN
+                SELECT CBH_CBT_ID, cbh.cbh_end_date
+                  INTO negocio_anterior, fecha_de_cambio
+                  FROM cellular_business_histories   cbh
+                 WHERE cbh_clu_cellular_number = a.LINEA
+                   AND cbh.cbh_end_date > fecha_comparacion
+                   AND cbh.cbh_start_date =
+                       (SELECT MAX(cbh2.cbh_start_date)
+                          FROM cellular_business_histories   cbh2
+                         WHERE cbh2.cbh_end_date IS NOT NULL
+                           AND cbh2.cbh_clu_cellular_number =
+                               cbh.cbh_clu_cellular_number);
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  fecha_de_cambio  := '';
+                  negocio_anterior := 'NO';
+                  hubo_cambio_plan := 'NO';
+              END;
+
+              IF (negocio_anterior = 'PP') THEN
+                hubo_cambio_plan := 'SI';
+              ELSE
+                fecha_de_cambio  := '';
+                hubo_cambio_plan := 'NO';
+              END IF;
+
+            EXCEPTION
+              WHEN NO_DATA_FOUND THEN
+                v_nivel_real := 'ERROR';
+            END;
+
+            --Busco datos de banco y tarjeta
+            IF a.cod_aprob IS NOT NULL THEN
+              BEGIN
+                SELECT ce.coe_name
+                  INTO v_tarjeta
+                  FROM tele_order_accesories   oac,
+                       collection_entities     ce
+
+                 WHERE oac.oac_coe_id = ce.coe_id
+                   AND oac.oac_orh_id = a.id_pedido_stl
+                   AND oac.oac_rsn_id = 'VENTER'
+                   AND ce.coe_cet_id = 'CT';
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  v_tarjeta := NULL;
+              END;
+              --------
+              BEGIN
+                SELECT tb.bnk_name
+                  INTO v_banco
+                  FROM tele_order_accesories   oac,
+                       payments_banks          pb,
+                       t_banks                 tb
+
+
+                 WHERE pb.pbk_pay_id = oac.oac_pay_id
+                   AND pb.pbk_bnk_id = tb.bnk_id
+                   AND oac.oac_orh_id = a.id_pedido_stl
+                   AND oac.oac_rsn_id = 'VENTER'
+                   AND a.Fecha_Creacion >= nvl(pb.pbk_start_date,To_date ('01/01/1900 00:00:00', 'DD/MM/YYYY HH24:MI:SS'))
+                   AND a.Fecha_Creacion < nvl(pb.pbk_end_date,To_date ('01/01/2099 00:00:00', 'DD/MM/YYYY HH24:MI:SS'));
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  v_banco   := NULL;
+              END;
+            ELSE
+              v_tarjeta := NULL;
+              v_banco   := NULL;
+            END IF;
+
+            --Busco track id
+            BEGIN
+              SELECT eco_track_id
+                INTO v_track_id
+                FROM ecom_card_transactions,
+                     tele_order_headers
+               WHERE eco_id = orh_eco_id
+                 AND orh_id = a.ID_PEDIDO_STL;
+            EXCEPTION
+              WHEN NO_DATA_FOUND THEN
+                v_track_id := null;
+            END;
+
+            --Busco datos de reserva
+            IF a.ID_RESERVA IS NOT NULL THEN
+              v_tipo_venta := 'Retiro en sucursal';
+              BEGIN
+                SELECT sao_date -- ECOM-3393
+                  INTO v_fecha_entrega -- ECOM-3393
+                  FROM tele_status_orders
+                 WHERE sao_chs_id = 181
+                   AND sao_orh_id = a.id_pedido_stl;
+
+
+               EXCEPTION
+                 WHEN NO_DATA_FOUND THEN
+                    v_fecha_entrega :=NULL; -- ECOM-3393
+               END;
+             ELSE
+               v_tipo_venta := 'Domicilio de facturacion';
+             END IF;
+
+
+            v_linea := v_linea || 'CATER' || ';' ||
+                                  a.CUENTA || ';' ||
+                                  a.LINEA || ';' ||
+                                  a.NOMBRE_Y_APELLIDO || ';' ||
+                                  a.TIPO_DOCUMENTO || ';' ||
+                                  a.DOCUMENTO || ';' ||
+                                  a.SEXO || ';' ||
+                                  a.EDAD || ';' ||
+                                  TO_CHAR(a.FECHA_DE_NACIMIENTO, 'DD/MM/YYYY') || ';' ||
+                                  a.REGION_ || ';' ||
+                                  a.NEGOCIO || ';' ||
+                                  a.ID_PEDIDO_STL || ';' ||
+                                  a.REMITO_SAP || ';' ||
+                                  a.ID_TRACKING || ';' ||
+                                  TO_CHAR(a.FECHA_CREACION, 'DD/MM/YYYY') || ';' ||
+                                  NULL || ';' ||
+                                  v_estado || ';';
+
+            v_linea := v_linea || a.NUMERO_TICKLER_PEDECO || ';' ||
+                                  a.SKU || ';' ||
+                                  a.DESCRIPCION_SKU || ';' ||
+                                  a.MARCA || ';';
+
+            --NIVEL VENTA;  NIVEL REAL;  VALIDACION;  PRECIO LISTA SIN IMP;
+            v_linea := v_linea || a.NIVEL_PRECIO_PEDIDO || ';' ||
+                                  V_NIVEL_REAL || ';' ||
+                                  v_valida_nivel || ';' ||
+                                  TO_CHAR(a.PRECIO_LISTA_SIN_IMP,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';';
+
+            --PRECIO LISTA CON IMP;  SUBS3;  SUBS10;  PRECIO FINAL;  TOTAL FINANCIADO;  DIF PL-PO;  FORMA DE PAGO;  CANTIDAD DE CUOTAS;
+            v_linea := v_linea || to_char(a.PRECIO_LISTA_SIN_IMP * impuesto,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  to_char(a.SUBS3,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  to_char(a.SUBS10,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  to_char(precio_final,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  to_char(total_financiado,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  to_char(a.SUBS10 * -1 ,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''')|| ';' ||
+                                  a.FORMA_DE_PAGO || ';' ||
+                                  a.CANTIDAD_DE_CUOTAS || ';' ||
+                                  a.CANTIDAD_DE_CUOTAS_REALES || ';' ||
+                                  v_tarjeta || ';' ||
+                                  v_banco || ';' ||
+                                  a.cod_aprob || ';';
+
+            --FLAG CAMBIO DE PLAN; CODIGO DE PLAN ORIGEN; MONTO PLAN ORIGEN; CODIGO DE PLAN DESTINO; MONTO PLAN DESTINO';
+            v_linea := v_linea || v_flag || ';' ||
+                                  v_plan_origen || ';' ||
+                                  to_char( v_monto_origen,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  v_plan_destino || ';' ||
+                                  to_char(v_monto_destino,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                  hubo_cambio_plan || ';' ||
+                                  TO_CHAR(fecha_de_cambio, 'DD/MM/YYYY') || ';' ||
+                                  a.RIESGO || ';' ||
+                                  TO_CHAR(a.FECHA_CREACION, 'hh24:mi:ss') || ';' ||
+                                  null || ';';
+
+            --Datos de la reserva
+            --FECHA ENTREGA; HORA ENTREGA; NOMBRE SUCURSAL; TIPO VENTA;
+            v_linea := v_linea || v_track_id || ';' ||
+                                  TO_CHAR(v_fecha_entrega, 'DD/MM/YYYY')|| ';' || -- ECOM-3393
+                                  TO_CHAR(v_fecha_entrega, 'hh24:mi:ss')|| ';' || -- ECOM-3393
+                                  a.NOMBRE_CAC || ';' ||
+                                  v_tipo_venta;
+
+
+            /* escribe en el archivo*/
+            UTL_FILE.PUT_LINE(OUT_FILE, v_linea, TRUE);
+            i := i + 1;
+          END; -- SIGO CATER
+
+        END LOOP;
+
+        BEGIN
+
+          FOR a IN c_pedidos_ecom2(v_fecha_desde, v_fecha_hasta) LOOP
+
+            v_estado        := NULL;
+            v_est_max       := NULL;
+            subs3           := NULL;
+            subs10          := NULL;
+            v_flag          := NULL;
+            v_plan_origen   := NULL;
+            v_monto_origen  := NULL;
+            v_plan_destino  := NULL;
+            v_monto_destino := NULL;
+            v_valida_nivel  := NULL;
+            v_nivel_real    := NULL;
+            impuesto        := NULL;
+            precio_final    := NULL;
+            v_tarjeta       := NULL;
+            v_banco         := NULL;
+
+            v_linea := b || ';';
+
+/***************************************************************************************************
+************************************EL PEDIDO ES DE ACTIVACION**************************************
+***************************************************************************************************/
+
+            SELECT TSO.SAO_CHS_ID
+              INTO v_est_max
+              FROM TELE_STATUS_ORDERS   TSO
+             WHERE TSO.SAO_ORH_ID = a.ID_PEDIDO_STL
+               AND TSO.SAO_DATE =
+                   (SELECT MAX(TSO2.SAO_DATE)
+                      FROM TELE_STATUS_ORDERS   TSO2
+                     WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID)
+               AND ROWNUM < 2;
+
+            IF v_est_max IN (177, 178, 179, 181, 183, 184, 188, 256) THEN
+              SELECT (CASE
+                       WHEN v_est_max IN (177, 178, 179, 184, 188) THEN
+                        'En preparación'
+                       WHEN v_est_max IN (181) THEN
+                        'Ya tenés tu pedido!'
+                       WHEN v_est_max IN (183) THEN
+                        'Cancelado'
+                       WHEN v_est_max IN (256) THEN
+                        'Devuelto'
+                       ELSE
+                        'SIN INFO'
+                     END)
+                INTO v_estado
+                FROM dual;
+            ELSE
+              -- Buscamos el Estado Traducido--
+              BEGIN
+                SELECT estado.MSG_SHORT
+                  INTO v_estado
+                  FROM (SELECT TSO.SAO_CHS_ID AS SAO_CHS_ID,
+                               TSO.SAO_ORH_ID AS SAO_ORH_ID,
+                               (SELECT DISTINCT TSO2.SAO_DATE
+                                  FROM TELE_STATUS_ORDERS   TSO2
+
+                                 WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID
+                                   AND TO_CHAR(TSO2.SAO_CHS_ID) =
+                                       C.RV_ABBREVIATION) AS SAO_DATE,
+                               C.RV_LOW_VALUE AS MSG_LONG,
+                               C.RV_HIGH_VALUE AS MSG_SHORT
+                          FROM TELE_STATUS_ORDERS   TSO,
+                               CG_REF_CODES       C
+
+                         WHERE TSO.SAO_ORH_ID = a.ID_PEDIDO_STL /*a.orh_id*/
+                           AND C.RV_DOMAIN = 'WS_TRADUCE2_259'
+                           AND C.RV_MEANING = TO_CHAR(TSO.SAO_CHS_ID)
+                           AND TSO.SAO_DATE =
+                               (SELECT MAX(TSO2.SAO_DATE)
+                                  FROM TELE_STATUS_ORDERS   TSO2,
+                                       CG_REF_CODES         C3
+
+
+                                 WHERE TSO2.SAO_ORH_ID = TSO.SAO_ORH_ID
+                                   AND TO_CHAR(TSO2.SAO_CHS_ID) =
+                                       C3.RV_MEANING
+                                   AND C3.RV_DOMAIN = 'WS_TRADUCE2_259'
+                                   AND C3.RV_DEFAULT = C.RV_DEFAULT)
+                        UNION ALL
+                        SELECT T.OCL_ACCION     AS SAO_CHS_ID,
+                               T.OCL_ORH_ID     AS SAO_ORH_ID,
+                               T.OCL_DATE       AS SAO_DATE,
+                               C2.RV_LOW_VALUE  AS MSG_LONG,
+                               C2.RV_HIGH_VALUE AS MSG_SHORT
+                          FROM TELE_ORDER_CLAIMS   T,
+                               CG_REF_CODES        C2
+
+
+                         WHERE t.ocl_orh_id = a.ID_PEDIDO_STL /*a.orh_id*/
+                           AND C2.RV_DOMAIN = 'WS_TRADUCE2_259'
+                           AND C2.RV_MEANING = to_char(T.OCL_ACCION)
+                         ORDER BY SAO_DATE DESC) estado
+                 WHERE rownum = 1;
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  v_estado := 'SIN INFO';
+              END; -- Estado
+
+            END IF;
+
+            BEGIN
+
+              -- Si no tuvo cambio de plan, busco el plan del cliente al momento de realizar la compra
+              SELECT CPL_RPL_ID, 'N'
+                INTO v_plan_origen, v_flag --14048638 --03/04/2017 09:50:40 a.m.
+                FROM cellular_plans
+               WHERE cpl_clu_cellular_number = a.LINEA
+                 AND cpl_stg_id = 'AH'
+                 AND trunc(a.FECHA_CREACION) BETWEEN trunc(cpl_add_date) AND
+                     trunc(cpl_end_date)
+                 AND cpl_start_date =
+                     (SELECT MAX(cpl_start_date)
+                        FROM cellular_plans
+
+                       WHERE cpl_clu_cellular_number = a.LINEA
+                         AND cpl_stg_id = 'AH'
+                         AND trunc(a.FECHA_CREACION) BETWEEN
+                             trunc(cpl_add_date) AND trunc(cpl_end_date));
+
+              SELECT SUM(monto_total)
+                INTO v_monto_origen
+                FROM v_suma_plan_packs
+               WHERE chp_rpl_id = v_plan_origen;
+
+            EXCEPTION
+              WHEN OTHERS THEN
+                NULL;
+            END; -- BUSQUEDA DE DATOS DE PLAN
+
+            BEGIN
+
+              BEGIN
+                SELECT b.spd_lev_id
+                  INTO v_nivel_real
+                  FROM sale_package_detail_plans   a,
+                       sale_package_details        b
+
+                 WHERE a.spl_spd_id = b.spd_id
+                   AND a.spl_rpl_id = v_plan_origen --plan
+                   AND b.spd_pro_id = a.SKU --producto de la detail
+                   AND b.spd_spc_id = a.SRF_SPN_SPC_ID --spc de la service_re.... 
+                   AND a.spl_start_date <= SYSDATE
+                   AND nvl(a.spl_end_date, SYSDATE + 1) >= SYSDATE;
+              EXCEPTION
+                WHEN OTHERS THEN
+                  NULL;
+              END;
+
+              BEGIN
+                SELECT otc_amount, erp_ammount, (otc_amount - erp_ammount)
+                  INTO precio_sin_imp, precio_lista, subs10
+                  FROM mv_precios            mv,
+                       s_ecom_catalog psc
+
+
+                 WHERE mv.pro_id = psc.sec_pro_id
+                   AND ect_id = 1
+                   AND epp_tas_id = '611-UN'
+                   AND erp_spc_id = 'NSE GSM'
+                   AND epp_but_id = 'R'
+                   AND epd_edl_level_id = 0
+                   AND epr_erl_level_id = 0
+                   AND epp_clt_type = 'CO'
+                   AND (nvl(a.sku, '*') = '*' OR pro_id =a.sku)
+                   AND (nvl(NULL, 0) = 0 OR NULL BETWEEN epp_low_range_rpl AND
+                       epp_high_range_rpl)
+                   AND epv_pty_id = 'PMX';
+
+              EXCEPTION
+                WHEN OTHERS THEN
+                  NULL;
+              END;
+
+              BEGIN
+                --busca si tiene promo de tienda
+                SELECT sph_precio_objetivo
+                  INTO v_oferta_tienda
+                  FROM sale_package_details  ,
+                       SALE_PACKAGE_PRICE_HISTORIES  ,
+                       products
+
+                 WHERE spd_id = sph_spd_id
+                   AND pro_id = spd_pro_id
+                   AND nvl(spd_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                   AND nvl(sph_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                   AND sph_start_date < trunc(SYSDATE + 1) --precios vigentes
+                   AND spd_spc_id in ('1050', '1051')
+                   AND pro_id = a.SKU
+                   AND spd_lev_id = v_nivel_real;
+              EXCEPTION
+                WHEN OTHERS THEN
+                  v_oferta_tienda := 0;
+              END;
+             --MIMI
+            IF a.Fecha_Creacion <=v_fecha_nuevo_iva_imp THEN
+              begin
+              SELECT decode(ic.inc_vgr_id,
+                            'J',
+                            1.21,
+                            'P',
+                            1.4148,
+                            'R',
+                            1.105)
+                INTO impuesto
+                FROM products             p,
+                     charge_assignments   c,
+                     invoice_concepts     ic
+
+
+
+               WHERE p.pro_chr_id = c.cha_chr_id
+                 AND c.cha_inc_id = ic.inc_id
+                 AND pro_id = a.SKU
+                 AND cha_pay_id = a.ID_FORMA_PAGO;
+
+            exception
+              when no_data_found then
+                SELECT decode(ic.inc_vgr_id,
+                              'J',
+                              1.21,
+                              'P',
+                              1.4148,
+                              'R',
+                              1.105)
+                  INTO impuesto
+                  FROM products             p,
+                       charge_assignments   c,
+                       invoice_concepts     ic
+
+
+
+                 WHERE p.pro_chr_id = c.cha_chr_id
+                   AND c.cha_inc_id = ic.inc_id
+                   AND pro_id = a.SKU
+                   and rownum < 2;
+            end;
+            ELSE
+              begin
+              SELECT decode(ic.inc_vgr_id,
+                            'J',
+                            1.21,
+                            'P',
+                            1.3273,
+                            'R',
+                            1.105)
+                INTO impuesto
+                FROM products             p,
+                     charge_assignments   c,
+                     invoice_concepts     ic
+
+
+
+               WHERE p.pro_chr_id = c.cha_chr_id
+                 AND c.cha_inc_id = ic.inc_id
+                 AND pro_id = a.SKU
+                 AND cha_pay_id = a.ID_FORMA_PAGO;
+
+            exception
+              when no_data_found then
+                SELECT decode(ic.inc_vgr_id,
+                              'J',
+                              1.21,
+                              'P',
+                              1.3273,
+                              'R',
+                              1.105)
+                  INTO impuesto
+                  FROM products             p,
+                       charge_assignments   c,
+                       invoice_concepts     ic
+
+
+
+                 WHERE p.pro_chr_id = c.cha_chr_id
+                   AND c.cha_inc_id = ic.inc_id
+                   AND pro_id = a.SKU
+                   and rownum < 2;
+            end;
+            END IF;
+
+              precio_con_imp := precio_sin_imp * impuesto; --2478.76
+
+              IF (a.CANTIDAD_DE_CUOTAS != 1) THEN
+                --si se pago en cuotas
+                IF (v_oferta_tienda != 0) THEN
+                  --si tiene precio de tienda
+                  BEGIN
+                    SELECT sph_precio_objetivo
+                      INTO v_oferta_estandar --busco el precio normal
+                      FROM sale_package_details  ,
+                           SALE_PACKAGE_PRICE_HISTORIES  ,
+                           products
+
+                     WHERE spd_id = sph_spd_id
+                       AND pro_id = spd_pro_id
+                       AND nvl(spd_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                       AND nvl(sph_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                       AND sph_start_date < trunc(SYSDATE + 1) --precios vigentes
+                       AND spd_spc_id in ('2017', '2018')
+                       AND pro_id = a.SKU
+                       AND spd_lev_id = v_nivel_real;
+                  EXCEPTION
+                    WHEN OTHERS THEN
+                      v_oferta_tienda := 0;
+                  END;
+
+                  subs3        := v_oferta_estandar - v_oferta_tienda; --OK --1734.71
+                  subsTotal    := (subs3 + subs10) * impuesto; --2099.3016
+                  precio_final := precio_con_imp - subsTotal;
+
+                  SELECT precio_con_imp - ((subs10 + subs3) * impuesto)
+                    INTO precio_final
+                    FROM dual;
+                ELSE
+                  --no tiene precio de tienda
+                  subs3        := 0;
+                  subsTotal    := subs10 * impuesto; --2099.3016
+                  precio_final := precio_con_imp - subsTotal;
+                END IF;
+              ELSE
+                --no lo pago en cuotas
+                IF (v_oferta_tienda != 0) THEN
+                  --si tiene precio de tienda
+
+                  SELECT sph_precio_objetivo
+                    INTO v_oferta_estandar --busco el precio normal
+                    FROM sale_package_details  ,
+                         SALE_PACKAGE_PRICE_HISTORIES  ,
+                         products
+
+                   WHERE spd_id = sph_spd_id
+                     AND pro_id = spd_pro_id
+                     AND nvl(spd_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                     AND nvl(sph_end_date, SYSDATE + 1) > trunc(SYSDATE)
+                     AND sph_start_date < trunc(SYSDATE + 1) --precios vigentes
+                     AND spd_spc_id in ('2017', '2018')
+                     AND pro_id = a.SKU
+                     AND spd_lev_id = v_nivel_real;
+
+                  subs3        := v_oferta_estandar - v_oferta_tienda;
+                  subsTotal    := subs10 * impuesto;
+                  precio_final := a.TOTAL_FINANCIADO;
+                ELSE
+                  --no tiene precio de tienda
+                  subs3        := 0;
+                  subsTotal    := subs10 * impuesto;
+                  precio_final := a.TOTAL_FINANCIADO;
+                END IF;
+              END IF;
+
+              --VERIFICO EL PENULTIMO PLAN SI ES PP HUBO CAMBIO DE PP A OTRO NEGOCIO
+              BEGIN
+                SELECT CBH_CBT_ID, cbh.cbh_end_date
+                  INTO negocio_anterior, fecha_de_cambio
+                  FROM cellular_business_histories   cbh
+                 WHERE cbh_clu_cellular_number = a.LINEA
+                   AND cbh.cbh_end_date > fecha_comparacion
+                   AND cbh.cbh_start_date =
+                       (SELECT MAX(cbh2.cbh_start_date)
+                          FROM cellular_business_histories   cbh2
+                         WHERE cbh2.cbh_end_date IS NOT NULL
+                           AND cbh2.cbh_clu_cellular_number =
+                               cbh.cbh_clu_cellular_number);
+              EXCEPTION
+                WHEN NO_DATA_FOUND THEN
+                  fecha_de_cambio  := '';
+                  negocio_anterior := 'NO';
+                  hubo_cambio_plan := 'NO';
+              END;
+
+              IF (negocio_anterior = 'PP') THEN
+                hubo_cambio_plan := 'SI';
+              ELSE
+                fecha_de_cambio  := '';
+                hubo_cambio_plan := 'NO';
+              END IF;
+              ---------------------------------------------------------------------------------------------
+      IF a.FORMA_DE_PAGO = 'CT' THEN
+       BEGIN
+        SELECT ce.coe_name TARJETA
+          INTO v_tarjeta
+          FROM tele_order_payments     top,
+               collection_entities     ce
+         WHERE top.orp_coe_id = ce.coe_id
+           AND top.orp_orh_id = a.id_pedido_stl
+           AND ce.coe_cet_id = 'CT';
+
+       EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            v_tarjeta := null;
+        END;
+           -------------------
+       BEGIN
+        SELECT tb.bnk_name
+          INTO v_banco
+          FROM tele_order_payments     top,
+               payments_banks          pb,
+               t_banks                 tb
+
+
+         WHERE pb.pbk_pay_id = top.orp_pay_id
+           AND pb.pbk_bnk_id = tb.bnk_id
+           AND top.orp_orh_id = a.id_pedido_stl
+           AND a.Fecha_Creacion >= nvl(pb.pbk_start_date,To_date ('01/01/1900 00:00:00', 'DD/MM/YYYY HH24:MI:SS'))
+           AND a.Fecha_Creacion < nvl(pb.pbk_end_date,To_date ('01/01/2099 00:00:00', 'DD/MM/YYYY HH24:MI:SS'));
+        EXCEPTION
+          WHEN NO_DATA_FOUND THEN
+            v_banco   := NULL;
+        END;
+      ELSE
+        v_tarjeta := NULL;
+        v_banco   := NULL;
+      END IF;
+
+
+      --Busco track id
+      BEGIN
+        SELECT eco_track_id
+          INTO v_track_id
+          FROM ecom_card_transactions,
+               tele_order_headers
+         WHERE eco_id = orh_eco_id
+           AND orh_id = a.ID_PEDIDO_STL;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          v_track_id := null;
+      END;
+            ---------------------------------
+
+              v_linea := v_linea || 'ACTIVACION' || ';' ||
+                                    a.CUENTA || ';' ||
+                                    a.LINEA || ';' ||
+                                    a.NOMBRE_Y_APELLIDO || ';' ||
+                                    a.TIPO_DOCUMENTO || ';' ||
+                                    a.DOCUMENTO || ';' ||
+                                    a.SEXO || ';' ||
+                                    a.EDAD || ';' ||
+                                    TO_CHAR(a.FECHA_DE_NACIMIENTO, 'DD/MM/YYYY') || ';' ||
+                                    a.region_ || ';' ||
+                                    a.NEGOCIO || ';' ||
+                                    a.ID_PEDIDO_STL || ';' ||
+                                    a.REMITO_SAP || ';' ||
+                                    a.ID_TRACKING || ';' ||
+                                    TO_CHAR(a.FECHA_CREACION, 'DD/MM/YYYY') || ';' ||
+                                    TO_CHAR(a.FECHA_ACTIVACION, 'DD/MM/YYYY') || ';' ||
+                                    v_estado || ';';
+
+              v_linea := v_linea || a.NUMERO_TICKLER_PEDECO || ';' ||
+                                    a.SKU || ';' ||
+                                    a.DESCRIPCION_SKU || ';' ||
+                                    a.MARCA || ';';
+
+              --              NIVEL VENTA;     NIVEL REAL          VALIDACION           PRECIO LISTA SIN IMP;  PRECIO LISTA CON IMP;     SUBS3;         SUBS10           PRECIO FINAL;               TOTAL FINANCIADO;            DIF PL-PO;        FORMA DE PAGO;            CANTIDAD DE CUOTAS;
+              v_linea := v_linea || null || ';' ||
+                                    V_NIVEL_REAL || ';' ||
+                                    null || ';' ||
+                                    to_char(precio_sin_imp,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(precio_con_imp,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs3,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs10,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(ROUND(precio_final, 2),'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(a.TOTAL_FINANCIADO,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    to_char(subs10 * -1,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    a.FORMA_DE_PAGO || ';' ||
+                                    a.CANTIDAD_DE_CUOTAS || ';' ||
+                                    a.CANTIDAD_DE_CUOTAS_REALES || ';' ||
+                                    v_tarjeta || ';' ||
+                                    v_banco  || ';' ||
+                                    a.COD_APROB || ';';
+
+              --FLAG CAMBIO DE PLAN ;CODIGO DE PLAN ORIGEN ;   MONTO PLAN ORIGEN;CODIGO DE PLAN DESTINO;MONTO PLAN DESTINO';
+              v_linea := v_linea || v_flag || ';' ||
+                                    v_plan_origen || ';' ||
+                                    to_char(v_monto_origen,'999G999G999G999D999','NLS_NUMERIC_CHARACTERS = '',.''''') || ';' ||
+                                    null || ';' ||
+                                    null || ';' ||
+                                    hubo_cambio_plan || ';' ||
+                                    TO_CHAR(fecha_de_cambio, 'DD/MM/YYYY') || ';' ||
+                                    a.RIESGO  || ';' ||
+                                    TO_CHAR(a.FECHA_CREACION, 'hh24:mi:ss') || ';' ||
+                                    TO_CHAR(a.FECHA_ACTIVACION, 'hh24:mi:ss') || ';' ||
+                                    v_track_id;
+
+
+              /* escribe en el archivo*/
+              UTL_FILE.PUT_LINE(OUT_FILE, v_linea, TRUE);
+              b := b + 1;
+            END;
+
+          END LOOP;
+
+        END;
+    END CASE;
+    --SI NO HAY DATOS DENTRO DEL CURSOR SE DEBE INFORMAR QUE POSIBLEMENTE EL SCHEDULERS ES VIEJO
+    IF v_datos <> 'S' THEN
+      UTL_FILE.PUT_LINE(OUT_FILE, 'NO HAY DATOS PARA ' || v_nom_cur, TRUE);
+    END IF;
+    UTL_FILE.FCLOSE(OUT_FILE);
+
+    v_result := f_create_mail(p_eFrom      => v_from,
+                              p_eTo        => v_destinatarios,
+                              p_eCC        => null,
+                              p_eSubject   => v_subject,
+                              p_pText      => v_subject,
+                              p_dir        => v_dir_path,
+                              p_file       => file_name,
+                              p_error_text => v_sentencia);
+
+    IF v_result <> 0 THEN
+       RAISE e_error;
+    END IF;
+
+    COMMIT;
+    RETURN 0;
+  EXCEPTION
+    WHEN e_error THEN
+      p_error_text := 'Error '|| v_sentencia ;
+      RETURN 1;
+    WHEN OTHERS THEN
+      p_error_text := 'Error '|| SQLCODE  || ', ' || SQLERRM ;
+      RETURN 1;
+  END f_genera_csv_ecommerce_orig;
+------------------------------------------
+END PA_WS_REPORT;
+/

@@ -1,0 +1,5 @@
+chmod 777 /home/exc44585/*.*
+
+sh /home/exc44585/corro_secuencia_PRIVILEGES.sh > /home/exc44585/nohup_ar_secuencia_PRIVILEGES.out
+cat /home/exc44585/nohup_ar_secuencia_PRIVILEGES.out
+

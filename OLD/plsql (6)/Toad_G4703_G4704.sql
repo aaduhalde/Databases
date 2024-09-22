@@ -1,0 +1,170 @@
+DROP TABLE  PURGE;
+SELECT * FROM CAT;
+
+DESCRIBE MKT_DIG_CAMPANIAS;
+DESCRIBE MKT_DIG_TRAKING_WA;
+
+MKT_DIG_CAMPANIAS;
+SELECT * FROM MKT_DIG_TRAKING_WA;
+
+
+SELECT * FROM MKT_DIG_CAMPANIAS_AUX1;
+SELECT * FROM MKT_DIG_TRAKING_WA_AUX1;
+
+
+
+
+
+
+
+
+
+
+
+
+select * from user_db_links
+where USERNAME = 'EXC44585'
+
+GRANT SELECT ON EXC44585.aux1_mkt_dig_G4703 TO dracing;
+GRANT SELECT ON aux1_traking_wa_G4704 TO dracing;
+
+ver mi tablespace asignado para exc44585;
+SELECT * FROM dba_tablespaces;
+SELECT * FROM user_tablespaces;
+TABLE_SPACE = DEVELOP_AUX
+
+
+///////////////////
+Servidor: mcdcqv53c151zrwc69nrhdwghg-q.ftp.marketingcloudops.com
+user: 534002372
+pwd: 58vfaFm%Jxzx
+path: /Export/PilotoWA
+//////////////////////
+
+select * from aux1_mkt_dig_G4703;
+GRANT A DRACING
+
+select * from dba_tab_privs
+where GRANTEE = 'EXC44585'
+
+EXC44585.
+//////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+
+
+create table MKT_DIG_CAMPANIAS
+( 
+GCI VARCHAR2(200),
+VALIDACION VARCHAR2(200),
+TIPOOFERTA VARCHAR2(200),
+PACKOFERTADO VARCHAR2(200),
+JOURNEYID VARCHAR2(200),
+CELLULAR_NUMBER	VARCHAR2(200),
+BILL_NUMBER	VARCHAR2(200),
+RANGO_REC_X_3 VARCHAR2(200),
+TIPOEVENTO VARCHAR2(200),
+CANAL VARCHAR2(200),
+CAMPANIA VARCHAR2(200),
+FECHAEVENTO VARCHAR2(200)
+)
+/
+
+CREATE TABLE MKT_DIG_TRAKING_WA
+(
+TRACKINGTYPE VARCHAR2(200),
+MID	VARCHAR2(200),
+EID	VARCHAR2(200),
+CONTACTKEY VARCHAR2(200),
+MOBILENUMBER VARCHAR2(200),
+EVENTDATEUTC VARCHAR2(200),
+CHANNELTYPE	VARCHAR2(200),
+APPID VARCHAR2(200),
+CHANNELID VARCHAR2(200),
+CHANNELNAME	VARCHAR2(200),
+STATUS VARCHAR2(200),
+REASON VARCHAR2(200),
+JBDEFINITIONID VARCHAR2(200),
+JBACTIVITYID VARCHAR2(200),
+SENDIDENTIFIER VARCHAR2(200),
+ASSETID	VARCHAR2(200),
+MESSAGETYPEID VARCHAR2(200) 
+)
+/
+
+
+//////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+
+
+CREATE TABLE MKT_DIG_CAMPANIAS_AUX1
+(
+GCI VARCHAR2(200),
+VALIDACION VARCHAR2(200),
+TIPOOFERTA VARCHAR2(200),
+PACKOFERTADO VARCHAR2(200),
+JOURNEYID VARCHAR2(200),
+CELLULAR_NUMBER	VARCHAR2(200),
+BILL_NUMBER	VARCHAR2(200),
+RANGO_REC_X_3 VARCHAR2(200),
+TIPOEVENTO VARCHAR2(200),
+CANAL VARCHAR2(200),
+CAMPANIA VARCHAR2(200),
+FECHAEVENTO VARCHAR2(200)
+)
+ORGANIZATION EXTERNAL
+(TYPE ORACLE_LOADER
+DEFAULT DIRECTORY D_D_G4703_SF_MKT_DIG_CAMPA
+ACCESS PARAMETERS
+(RECORDS DELIMITED BY NEWLINE
+FIELDS TERMINATED BY ","
+MISSING FIELD VALUES ARE NULL
+)
+LOCATION (D_D_G4703_SF_MKT_DIG_CAMPA:'sf_mkt_dig_campanias.csv')
+)
+REJECT LIMIT 0
+/
+COMMIT
+/
+//////////////////////////////////////////////////////////////////////////////////
+BADFILE 'dig_campanias.bad'
+DISCARDFILE 'dig_campanias.dis'
+LOGFILE 'dig_campanias.log'
+
+//////////////////////////////////////////////////////////////////////////////////
+
+CREATE TABLE MKT_DIG_TRAKING_WA_AUX1
+( 
+TRACKINGTYPE VARCHAR2(200),
+MID	VARCHAR2(100),
+EID	VARCHAR2(100),
+CONTACTKEY VARCHAR2(100),
+MOBILENUMBER VARCHAR2(100),
+EVENTDATEUTC VARCHAR2(100),
+CHANNELTYPE	VARCHAR2(100),
+APPID VARCHAR2(100),
+CHANNELID VARCHAR2(100),
+CHANNELNAME	VARCHAR2(100),
+STATUS VARCHAR2(100),
+REASON VARCHAR2(100),
+JBDEFINITIONID VARCHAR2(100),
+JBACTIVITYID VARCHAR2(100),
+SENDIDENTIFIER VARCHAR2(100),
+ASSETID	VARCHAR2(100),
+MESSAGETYPEID VARCHAR2(100) 
+)
+ORGANIZATION EXTERNAL
+(TYPE ORACLE_LOADER
+DEFAULT DIRECTORY D_D_G4704_SF_MKT_DIG_TRAKI
+ACCESS PARAMETERS
+(RECORDS DELIMITED BY NEWLINE
+FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"'
+)
+LOCATION ('')
+)
+REJECT LIMIT UNLIMITED
+
+//////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////
+

@@ -1,0 +1,28 @@
+--create entity
+--create setdata, csv.
+--create stored
+--connect to pipe_python
+
+
+sudo docker images
+sudo docker ps 
+ps -a 
+ps -l 
+sudo docker exec -it --user=oracle myxedb bash
+sqlplus sys/password@XEPDB1 as sysdba
+
+
+$sudo docker run --name myxedb \
+    -d \
+    -p 51521:1521 \
+    -p 55500:5500 \
+    -e ORACLE_PWD=tscherenkowaBABA \
+    -e ORACLE_CHARACTERSET=AL32UTF8 \
+    oracle/database:18.4.0-xe
+$ . oraenv
+ORACLE_SID = [XE] ? XE
+The Oracle base remains unchanged with value /opt/oracle
+
+
+https://blogs.oracle.com/connect/post/deliver-oracle-database-18c-express-edition-in-containers
+https://docs.docker.com/engine/reference/run/
