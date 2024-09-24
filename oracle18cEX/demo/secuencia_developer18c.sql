@@ -1,2 +1,2 @@
-start /home/alex/Documents/GIT/DATABASES/DBAoracle/test1/test1.sql
+start /home/alex/GIT/Databases/oracle18cEX/demo/plsql_developer18c.sql
 exit
