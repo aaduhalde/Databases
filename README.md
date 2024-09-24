@@ -15,7 +15,7 @@
   #integration 
   #a/b
   
-  Manipulaci�n, integraci�n de datos y automatizaci�n.  
+  MANIPULACION, INTEGRACION de datos y AUTOMATIZACION.  
   Machine learning. REST API e interfaces de usuario. CI/CD Pipelines. 
 
   Data governance, data security, and privacy practices, including data anonymization, access controls, and compliance regulations
