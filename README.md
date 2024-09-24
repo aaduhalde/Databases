@@ -15,10 +15,7 @@
   #integration 
   #a/b
   
-  MANIPULACION, INTEGRACION de datos y AUTOMATIZACION.  
-  Machine learning. REST API e interfaces de usuario. CI/CD Pipelines. 
-
-  Data governance, data security, and privacy practices, including data anonymization, access controls, and compliance regulations
+    Data governance, data security, and privacy practices, including data anonymization access controls, and compliance regulations.
 
 TDD, BDD.
 Development, architecture and scalability of data models.
