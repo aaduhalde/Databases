@@ -1,5 +1,5 @@
 
-SQL*Plus: Release 11.2.0.4.0 Production on Tue Sep 24 18:51:24 2024
+SQL*Plus: Release 11.2.0.4.0 Production on Wed Sep 25 16:41:47 2024
 
 Copyright (c) 1982, 2013, Oracle.  All rights reserved.
 
@@ -8,8 +8,71 @@ Connected to:
 Oracle Database 18c Express Edition Release 18.0.0.0.0 - Production
 
 SQL> 
-ADDR		       INDX    INST_ID	   CON_ID D
----------------- ---------- ---------- ---------- -
-0000000013C1FBBC	  0	     1		0 X
+Session altered.
 
+Elapsed: 00:00:00.00
+
+USERNAME		       DEFAULT_TABLESPACE
+------------------------------ --------------------
+SYS			       SYSTEM
+SYSTEM			       SYSTEM
+XS$NULL 		       SYSTEM
+OJVMSYS 		       SYSTEM
+LBACSYS 		       SYSTEM
+OUTLN			       SYSTEM
+SYS$UMF 		       SYSTEM
+DBSNMP			       SYSAUX
+APPQOSSYS		       SYSAUX
+DBSFWUSER		       SYSAUX
+GGSYS			       SYSAUX
+
+USERNAME		       DEFAULT_TABLESPACE
+------------------------------ --------------------
+ANONYMOUS		       SYSAUX
+CTXSYS			       SYSAUX
+DVSYS			       SYSAUX
+SI_INFORMTN_SCHEMA	       SYSAUX
+DVF			       SYSAUX
+GSMADMIN_INTERNAL	       SYSAUX
+ORDPLUGINS		       SYSAUX
+MDSYS			       SYSAUX
+OLAPSYS 		       SYSAUX
+ORDDATA 		       SYSAUX
+XDB			       SYSAUX
+
+USERNAME		       DEFAULT_TABLESPACE
+------------------------------ --------------------
+WMSYS			       SYSAUX
+ORDSYS			       SYSAUX
+GSMCATUSER		       USERS
+MDDATA			       USERS
+SYSBACKUP		       USERS
+REMOTE_SCHEDULER_AGENT	       USERS
+GSMUSER 		       USERS
+SYSRAC			       USERS
+AUDSYS			       USERS
+DIP			       USERS
+SYSKM			       USERS
+
+USERNAME		       DEFAULT_TABLESPACE
+------------------------------ --------------------
+ORACLE_OCM		       USERS
+SYSDG			       USERS
+
+35 rows selected.
+
+Elapsed: 00:00:00.00
+
+NAME
+---------
+XE
+
+Elapsed: 00:00:00.01
+
+NAME
+---------
+XE
+
+Elapsed: 00:00:00.00
+********************************* * * * * * * Alejandro Adrian Duhalde
 Disconnected from Oracle Database 18c Express Edition Release 18.0.0.0.0 - Production
