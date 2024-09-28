@@ -1,4 +1,3 @@
-
 SET timing ON
 SET verify OFF
 SET SERVEROUTPUT ON SIZE 10000
@@ -19,9 +18,3 @@ SELECT NAME FROM v$database;
 
 
 PROMPT ********************************* * * * * * * Alejandro Adrian Duhalde
-
-
---Crear usuario en esquema XE
---Crear entidad para usuario esquema XE
-
-
