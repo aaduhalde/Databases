@@ -1,6 +1,0 @@
-/*
-MSQL, mariadb
-*/
-
-
-
