@@ -1,7 +1,0 @@
-chmod 777 /home/exc44585/7_G3390/*.*/
-ls -ltrha /home/exc44585/7_G3390/
-
-sh /home/exc44585/7_G3390/pre_corro_G3390.sh > /home/exc44585/7_G3390/nohup_ar_G3390.out
-cat /home/exc44585/7_G3390/nohup_ar_G3390.out
-
-cat /home/exc44585/7_G3390/secuencia_G3390.sql

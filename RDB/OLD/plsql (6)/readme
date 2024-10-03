@@ -1,7 +1,0 @@
-chmod 777 /home/exc44585/5_G4703/*.*/
-ls -ltrha /home/exc44585/5_G4703/
-
-sh /home/exc44585/5_G4703/pre_corro_G4703.sh > /home/exc44585/5_G4703/nohup_ar_G4703.out
-cat /home/exc44585/5_G4703/nohup_ar_G4703.out
-
-cat /home/exc44585/5_G4703/secuencia_G4703.sql
