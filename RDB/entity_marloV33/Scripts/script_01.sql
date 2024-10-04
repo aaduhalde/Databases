@@ -1,38 +1,23 @@
-/* 
-carga de tablas 
-*/
+SELECT SYSDATE() TIME_START_MONITOR;
+select user() user;
+\! echo version: create_monitor_facts_ac1_data_temp;
+\! echo aaduhalde@outlook.es;
+\! echo _____________________create_monitor_facts_ac1_data_temp;
+/*CREATE */
 
-/* 
-monitor_facts_account1
-monitor_facts_account2
-monitor_facts_assets
-monitor_facts_creditor
-monitor_facts_fixed_cost
-monitor_facts_x1234
-*/
+CREATE  TABLE monitor.monitor_facts_ac1_data_temp ( 
+	iddata_temp          INT  NOT NULL   AUTO_INCREMENT  PRIMARY KEY,
+	name                 VARCHAR(100)  NOT NULL     ,
+	datecreate           DATETIME  NOT NULL     ,
+	dateexpi             DATETIME  NOT NULL     ,
+	amount1              DECIMAL(20,2)  NOT NULL     ,
+	amount2              DECIMAL(20,2)       ,
+	amount3              DECIMAL(20,2)       ,
+	amount4              DECIMAL(20,2)       ,
+	flag1                VARCHAR(2)  NOT NULL     ,
+	flag2                VARCHAR(2)       ,
+	datepay              DATETIME       
+ ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
-
-
-
-
-
-
-
-
-
-
-
-
-/*
-monitor_account1
-monitor_account2
-
-monitor_assets1
-monitor_assets2
-monitor_assets3
-monitor_assets4
-
-monitor_creditor
-monitor_fixed_cost
-monitor_prices
-*/
+SELECT SYSDATE() TIME_FINISHED
+\! echo _____________________create_monitor_facts_ac1_data_temp;
