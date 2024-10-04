@@ -1,11 +1,11 @@
 SELECT SYSDATE() TIME_START_MONITOR;
 select user() user;
-\! echo version: create_monitor_facts_ac1_data_temp;
+\! echo version: create_monitor_facts_ac_data_temp;
 \! echo aaduhalde@outlook.es;
-\! echo _____________________create_monitor_facts_ac1_data_temp;
+\! echo _____________________create_monitor_facts_ac_data_temp;
 /*CREATE */
 
-CREATE  TABLE monitor.monitor_facts_ac1_data_temp ( 
+CREATE  TABLE monitor.monitor_facts_ac_data_temp ( 
 	iddata_temp          INT  NOT NULL   AUTO_INCREMENT  PRIMARY KEY,
 	name                 VARCHAR(100)  NOT NULL     ,
 	datecreate           DATETIME  NOT NULL     ,
@@ -20,4 +20,4 @@ CREATE  TABLE monitor.monitor_facts_ac1_data_temp (
  ) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 SELECT SYSDATE() TIME_FINISHED
-\! echo _____________________create_monitor_facts_ac1_data_temp;
+\! echo _____________________create_monitor_facts_ac_data_temp;

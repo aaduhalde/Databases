@@ -18,7 +18,7 @@ INSERT INTO monitor.monitor_facts_account1
     flag1, 
     flag2, 
     datepay
-     from  monitor.monitor_facts_ac1_data_temp;
+     from  monitor.monitor_facts_ac_data_temp;
 
 
 SELECT SYSDATE() TIME_FINISHED
