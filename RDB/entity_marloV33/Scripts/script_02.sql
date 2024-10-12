@@ -11,15 +11,17 @@ INSERT INTO monitor.monitor_facts_ac_data_temp
 	(select 'name' from dual),
     now(),
     now(),
-    (select '100.05' from dual),
-    (select '100.90' from dual),
-    (select '100.10' from dual),
-    (select '100.50' from dual),
-    (select 'AA' from dual), 
-    (select 'BB' from dual),
+    (select '100.05' from dual) fact_account_1234,
+    (select '100.90' from dual) fact_account_1234,
+    (select '100.10' from dual) fact_account_1234,
+    (select '100.50' from dual) fact_account_1234,
+    (select 'AA' from dual) flag_status, 
+    (select 'BB' from dual) flag_status,
     now()
 from 
     dual;
+
+
 
 SELECT SYSDATE() TIME_FINISHED
 \! echo _____________________INSERT_DATA monitor_facts_ac_data_temp ;
