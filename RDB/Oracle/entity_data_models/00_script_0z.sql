@@ -17,4 +17,4 @@ SELECT NAME FROM v$database;
 /
 
 
-PROMPT ********************************* * * * * * * Alejandro Adrian Duhalde
+PROMPT ********************************* Alejandro Adrian Duhalde
